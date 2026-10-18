@@ -1,0 +1,286 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  SlimerClip — "lampu studio"
+  Studio podcast diterangi lampu gel berwarna. Latar indigo-ungu dengan pendaran
+  magenta, toska, dan biru; panel semi-transparan agar cahayanya tembus. Pink gel
+  untuk aksi utama, toska sebagai warna kedua. Tiap sudut konten punya warna label
+  sendiri seperti label klip di timeline editor.
+*/
+@theme inline {
+  --font-sans: var(--font-onest);
+  --font-display: var(--font-jakarta);
+
+  /* Palet dasar */
+  --color-bay: #1d1a45;                    /* latar dasar (indigo-ungu) */
+  --color-panel: rgb(255 255 255 / 0.06);  /* panel kaca */
+  --color-raised: rgb(255 255 255 / 0.11); /* elemen di atas panel, hover */
+  --color-rule: rgb(255 255 255 / 0.15);   /* garis & border */
+  --color-ink: #f6f3ff;                    /* teks utama */
+  --color-ink-muted: #bdb7e0;              /* teks sekunder */
+  --color-ink-faint: #8d87bd;              /* tick ruler, teks non-esensial */
+
+  /* Aksi & status */
+  --color-signal: #ff5fa2;       /* pink gel: aksi utama */
+  --color-signal-deep: #f0438c;
+  --color-teal: #3dd6c6;         /* warna kedua */
+  --color-sage: #5ee6b8;         /* berhasil */
+  --color-tally: #ff7b7b;        /* gagal */
+
+  /* Meter skor: toska → lila → pink panas */
+  --color-meter-low: #3dd6c6;
+  --color-meter-mid: #b49bff;
+  --color-meter-hot: #ff5fa2;
+
+  /* Warna label klip (sudut konten) */
+  --color-label-cerulean: #6cc8ff;
+  --color-label-rose: #ff9a76;
+  --color-label-caribbean: #5ee6b8;
+  --color-label-iris: #d3b3ff;
+  --color-label-olive: #f7a8ff;
+
+  /* Token shadcn (dipakai komponen ui/*) */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: calc(var(--radius) * 0.75);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.5);
+}
+
+:root {
+  --background: #1d1a45;
+  --foreground: #f6f3ff;
+  --card: #2a2660;
+  --card-foreground: #f6f3ff;
+  --popover: #2a2660;
+  --popover-foreground: #f6f3ff;
+  --primary: #ff5fa2;
+  --primary-foreground: #1d1a45;
+  --secondary: #2a2660;
+  --secondary-foreground: #f6f3ff;
+  --muted: #2a2660;
+  --muted-foreground: #bdb7e0;
+  --accent: #2a2660;
+  --accent-foreground: #f6f3ff;
+  --destructive: #ff7b7b;
+  --border: rgb(255 255 255 / 0.15);
+  --input: rgb(255 255 255 / 0.15);
+  --ring: #ff5fa2;
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    color-scheme: dark;
+    overflow-x: clip;  /* visual landing yang melebar tidak membuat scroll menyamping (sticky tetap jalan) */
+  }
+  body {
+    @apply text-ink antialiased;
+    /* Pendaran lampu gel studio: magenta kanan atas, toska kiri, biru bawah */
+    background:
+      radial-gradient(55rem 38rem at 92% -8%, rgb(255 95 162 / 0.30), transparent 62%),
+      radial-gradient(48rem 42rem at -12% 28%, rgb(61 214 198 / 0.28), transparent 60%),
+      radial-gradient(52rem 34rem at 55% 112%, rgb(108 120 255 / 0.38), transparent 60%),
+      var(--color-bay);
+    background-attachment: fixed;
+  }
+  /* Grain halus supaya latar tidak terasa datar */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    opacity: 0.07;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  ::selection {
+    background: rgb(255 95 162 / 0.35);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+  button:not(:disabled), [role="button"] {
+    cursor: pointer;
+  }
+}
+
+@layer components {
+  /* Judul: Plus Jakarta Sans tebal dengan spasi rapat — tegas tapi tetap mudah dibaca */
+  .type-display {
+    font-family: var(--font-display);
+    font-weight: 800;
+    letter-spacing: -0.035em;
+    line-height: 1.02;
+  }
+  .type-heading {
+    font-family: var(--font-display);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+  /* Timecode & angka: tabular agar sejajar */
+  .timecode {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 h-10 text-sm font-semibold whitespace-nowrap select-none;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .btn:disabled {
+    @apply opacity-40 cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply bg-signal text-bay;
+  }
+  .btn-primary:not(:disabled):hover {
+    @apply bg-signal-deep;
+  }
+  .btn-quiet {
+    @apply border border-rule text-ink;
+  }
+  .btn-quiet:not(:disabled):hover {
+    @apply bg-raised;
+  }
+  .btn-sm {
+    @apply h-8 px-3 text-xs;
+  }
+
+  .field {
+    @apply flex items-center gap-3 rounded-md border border-rule bg-panel px-4 backdrop-blur-md;
+    transition: border-color 120ms ease;
+  }
+  .field:focus-within {
+    @apply border-signal;
+  }
+}
+
+/* Playhead saat menunggu analisis */
+@keyframes playhead-sweep {
+  from { left: 0%; }
+  to   { left: 100%; }
+}
+/* Satu momen animasi: marker peta potongan muncul berurutan dari kiri */
+@keyframes marker-in {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+.marker-in {
+  transform-origin: bottom;
+  animation: marker-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marker-in { animation: none; }
+  .playhead { animation: none !important; }
+}
+
+/* Scrollbar tipis untuk daftar di panel render */
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.2) transparent;
+}
+
+/* Panel kaca: biarkan pendaran latar tembus */
+.glass {
+  background: var(--color-panel);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+/* ── Landing page ───────────────────────────────────────────── */
+
+/* Judul hero muncul per baris (satu momen orkestrasi saat halaman dibuka) */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(0.45em); }
+  to   { opacity: 1; transform: none; }
+}
+.rise {
+  display: block;
+  animation: rise 800ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Pita thumbnail & deretan klip bergerak pelan tanpa henti */
+@keyframes drift {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.drift { animation: drift 60s linear infinite; }
+.drift-slow { animation: drift 90s linear infinite; }
+
+/* Kursor mengetik pada ilustrasi "tempel link" */
+@keyframes type-in {
+  from { width: 0; }
+  to   { width: 100%; }
+}
+@keyframes caret {
+  50% { border-color: transparent; }
+}
+.typing {
+  overflow: hidden;
+  white-space: nowrap;
+  border-right: 2px solid var(--color-signal);
+  animation: type-in 2.4s steps(32) 0.4s both, caret 0.9s step-end infinite;
+}
+
+/* Elemen yang muncul saat masuk layar */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  transition: opacity 700ms ease, transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.reveal.is-in {
+  opacity: 1;
+  transform: none;
+}
+
+/* Kurva/garis tergambar saat masuk layar (path diberi pathLength="1") */
+.draw path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset 1.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.draw.is-in path { stroke-dashoffset: 0; }
+
+/* Bar yang terisi saat masuk layar */
+.fill-bar {
+  transform-origin: left;
+  transform: scaleX(0);
+  transition: transform 1.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.is-in .fill-bar { transform: scaleX(1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .drift, .drift-slow, .typing { animation: none; }
+  .typing { width: 100%; border-right: 0; }
+  .reveal { opacity: 1; transform: none; transition: none; }
+  .draw path { stroke-dashoffset: 0; transition: none; }
+  .fill-bar { transform: none; transition: none; }
+}
