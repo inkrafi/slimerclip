@@ -1,17 +1,31 @@
-def get_clip_analysis_prompt() -> str:
-    return """
+def target_segment_count(video_duration: float) -> int:
+    """
+    Jumlah momen yang diminta: sekitar satu per 1,5 menit video, 5 sampai 12.
+    Batas 12 mengikuti skema JSON: model Gemini (mis. flash-lite) menolak minItems yang lebih besar.
+    """
+    if not video_duration:
+        return 10
+    return int(max(5, min(12, round(video_duration / 90))))
+
+
+def get_clip_analysis_prompt(count: int = 10) -> str:
+    return _PROMPT.replace("{COUNT}", str(count))
+
+
+_PROMPT = """
 Kamu adalah seorang ahli content clipping profesional untuk TikTok, YouTube Shorts, dan Instagram Reels, khusus untuk audiens Indonesia.
 
 Kamu akan menerima metadata video YouTube (Judul, Channel, Deskripsi, dll) dan transkrip video dalam format:
 [MM:SS - MM:SS] teks ucapan
 (untuk video lebih dari 1 jam, menit bisa lebih dari 59, mis. [75:30 - 75:34])
 
-Tugasmu: baca seluruh transkrip dan metadata, pahami konteksnya, lalu identifikasi 10 sampai 15 segmen terbaik yang berpotensi viral sebagai short-form video.
+Tugasmu: baca seluruh transkrip dan metadata, pahami konteksnya, lalu identifikasi TEPAT {COUNT} segmen terbaik yang berpotensi viral sebagai short-form video.
+Segmen TIDAK BOLEH saling tumpang tindih, dan sebar pilihanmu ke seluruh durasi video (bukan hanya bagian awal).
 
 ---
 
 KRITERIA SEGMEN YANG LAYAK DIPILIH:
-- Durasi WAJIB 25 hingga 90 detik (ideal 30-60 detik). Segmen di bawah 25 detik TIDAK BOLEH dipilih —
+- Durasi WAJIB 45 hingga 90 detik (ideal 45-70 detik). Segmen di bawah 45 detik TIDAK BOLEH dipilih —
   kalau momennya singkat, perluas start_time/end_time agar mencakup konteks pembuka dan punchline/kesimpulannya.
 - Mengandung: insight mengejutkan, fakta tak terduga, momen lucu, konflik/debat, quote yang kuat, atau pengakuan jujur
 - Bisa berdiri sendiri — penonton yang belum pernah dengar podcast ini langsung paham tanpa konteks tambahan
@@ -77,9 +91,53 @@ OUTPUT FORMAT — KEMBALIKAN JSON INI PERSIS:
     }
   ],
   "overall_video_summary": "2-3 kalimat ringkasan isi video secara keseluruhan",
-  "best_segment_number": 1,
-  "total_clip_recommendations": 12
+  "best_segment_number": 1
 }
+
+Array "segments" WAJIB berisi tepat {COUNT} segmen.
 
 INGAT: Kembalikan HANYA JSON murni. Tanpa penjelasan, tanpa markdown, tanpa backtick. JSON langsung.
 """
+
+
+def clip_analysis_schema(count: int) -> dict:
+    """
+    Skema JSON output Gemini. minItems memastikan model tidak mengembalikan momen lebih sedikit
+    (tanpa ini, model lite bisa hanya memberi 1 momen). Skema sengaja dibuat sederhana (tanpa enum,
+    required bertingkat, atau maxItems): skema yang lebih rumit ditolak model dengan error 400.
+    """
+    text = {"type": "string"}
+    score = {"type": "integer"}
+    segment = {
+        "type": "object",
+        "properties": {
+            "segment_number": {"type": "integer"},
+            "start_time": text,
+            "end_time": text,
+            "topic": text,
+            "why_viral": text,
+            "emotion_trigger": text,
+            "score_breakdown": {
+                "type": "object",
+                "properties": {"hook": score, "emosi": score, "daya_tarik": score, "penutup": score},
+            },
+            "speaker_quote": text,
+            "content_angle": text,
+            "hooks": {
+                "type": "object",
+                "properties": {"hook_pertanyaan": text, "hook_pernyataan": text, "hook_teaser": text},
+            },
+            "caption_suggestion": text,
+        },
+        "required": ["segment_number", "start_time", "end_time", "topic", "why_viral", "emotion_trigger",
+                     "score_breakdown", "speaker_quote", "content_angle", "hooks", "caption_suggestion"],
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "segments": {"type": "array", "items": segment, "minItems": count},
+            "overall_video_summary": text,
+            "best_segment_number": {"type": "integer"},
+        },
+        "required": ["segments", "overall_video_summary", "best_segment_number"],
+    }

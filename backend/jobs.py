@@ -6,7 +6,7 @@ Frontend cukup menanyakan status job (polling), jadi render tetap berjalan dan
 progresnya bisa dilihat lagi walau halaman ditutup atau berpindah.
 
 Catatan: status job hilang jika backend di-restart (klip yang sudah selesai tetap
-tersimpan di clips/<video_id>/ dan manifest-nya).
+tersimpan di folder klip pengguna dan manifest-nya).
 """
 import copy
 import threading
@@ -23,9 +23,10 @@ class JobManager:
         self._jobs: dict[str, dict] = {}
         self._lock = threading.Lock()
 
-    def create(self, video_id: str, title: str, segments: list) -> dict:
+    def create(self, owner: str, video_id: str, title: str, segments: list) -> dict:
         job = {
             "id": uuid.uuid4().hex[:12],
+            "owner": owner,
             "video_id": video_id,
             "title": title,
             "status": "queued",
@@ -74,28 +75,33 @@ class JobManager:
             if job and str(segment_number) in job["segments"]:
                 job["segments"][str(segment_number)].update(fields)
 
-    def get(self, job_id: str) -> dict | None:
+    def get(self, job_id: str, owner: str | None = None) -> dict | None:
+        """Job berdasarkan ID; jika owner diisi, hanya job milik pengguna tersebut."""
         with self._lock:
             job = self._jobs.get(job_id)
-            return copy.deepcopy(job) if job else None
+            if not job or (owner is not None and job["owner"] != owner):
+                return None
+            return copy.deepcopy(job)
 
-    def list(self, video_id: str | None = None) -> list:
-        """Job aktif + job yang baru selesai, terbaru dulu."""
+    def list(self, owner: str, video_id: str | None = None) -> list:
+        """Job aktif + job yang baru selesai milik pengguna, terbaru dulu."""
         with self._lock:
             self._prune()
-            jobs = [j for j in self._jobs.values() if video_id is None or j["video_id"] == video_id]
+            jobs = [j for j in self._jobs.values()
+                    if j["owner"] == owner and (video_id is None or j["video_id"] == video_id)]
             return copy.deepcopy(sorted(jobs, key=lambda j: j["created_at"], reverse=True))
 
-    def active_keys(self, video_id: str) -> set:
-        """Rentang momen (start-end) yang sedang antre/dirender untuk video ini."""
+    def active_keys(self, owner: str, video_id: str | None = None) -> set:
+        """Momen (video_id, start-end) milik pengguna yang sedang antre/dirender."""
         with self._lock:
             keys = set()
             for job in self._jobs.values():
-                if job["video_id"] != video_id or job["status"] not in ACTIVE_STATUSES:
+                if (job["owner"] != owner or job["status"] not in ACTIVE_STATUSES
+                        or (video_id is not None and job["video_id"] != video_id)):
                     continue
                 for seg in job["segments"].values():
                     if seg["status"] not in ("done", "error"):
-                        keys.add(seg["key"])
+                        keys.add((job["video_id"], seg["key"]))
             return keys
 
     def _prune(self):

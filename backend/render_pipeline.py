@@ -1,7 +1,8 @@
 import os
 import subprocess
 
-from caption_service import CaptionService
+from caption_service import get_caption_service
+from caption_styles import FONTS_DIR
 from speaker_layout import SpeakerLayoutPlanner
 
 CLIPS_DIR = os.path.join(os.path.dirname(__file__), "clips")
@@ -12,6 +13,14 @@ def _ffmpeg_error(e: subprocess.CalledProcessError) -> str:
     """Ambil beberapa baris terakhir stderr FFmpeg (bagian awal hanya banner/info stream)."""
     lines = [l.strip() for l in e.stderr.decode('utf-8', errors='ignore').splitlines() if l.strip()]
     return " | ".join(lines[-3:])
+
+
+def _fonts_dir_for(cwd: str) -> str:
+    """Path folder font untuk filter ass, relatif terhadap cwd FFmpeg (tanpa ':' drive Windows)."""
+    try:
+        return os.path.relpath(FONTS_DIR, cwd).replace("\\", "/")
+    except ValueError:  # beda drive di Windows → path absolut: dikutip (level graph) + ':' di-escape (level opsi)
+        return "'" + FONTS_DIR.replace("\\", "/").replace(":", r"\:") + "'"
 
 
 def _run_ffmpeg(cmd: list, error_prefix: str, cwd: str = None):
@@ -31,7 +40,7 @@ def _remove_quietly(path: str):
 
 class RenderPipeline:
     def __init__(self):
-        self.caption_service = CaptionService()
+        self.caption_service = get_caption_service()
         self.layout_planner = SpeakerLayoutPlanner()
 
     def _time_to_seconds(self, time_str: str) -> float:
@@ -65,7 +74,8 @@ class RenderPipeline:
 
         # Nama file dari rentang waktu: tetap sama walau nomor momen berubah setelah analisis ulang
         base_name = f"{video_id}_{int(start_sec)}-{int(end_sec)}"
-        output_dir = os.path.join(CLIPS_DIR, video_id)
+        # Folder output per pengguna diisi oleh app.py; default untuk pemakaian langsung
+        output_dir = options.get('output_dir') or os.path.join(CLIPS_DIR, video_id)
         os.makedirs(output_dir, exist_ok=True)
         final_output_path = os.path.join(output_dir, f"{base_name}.mp4")
         # Render ke file sementara lalu rename, agar file final tidak pernah setengah jadi
@@ -108,8 +118,9 @@ class RenderPipeline:
                 self.caption_service.generate_ass(transcribed, os.path.join(output_dir, ass_name),
                                                   options.get('caption_style', {}))
                 # FFmpeg dijalankan dengan cwd=output_dir, jadi cukup nama file (aman dari
-                # masalah escape path Windows "C:\..." di dalam filter)
-                ass_filter = f"ass={ass_name}"
+                # masalah escape path Windows "C:\..." di dalam filter). Font caption dibundel
+                # di backend/fonts dan dirujuk dengan path relatif karena alasan yang sama.
+                ass_filter = f"ass={ass_name}:fontsdir={_fonts_dir_for(output_dir)}"
 
             # 3. Final Render (FFmpeg) — satu kali encode langsung dari video sumber
             if callback: callback({'status': 'rendering', 'progress': 60})

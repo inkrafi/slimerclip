@@ -9,11 +9,15 @@ export interface LandingMedia {
   loaded: boolean
 }
 
-/** Gambar & klip asli dari pustaka pengguna untuk landing page (kosong jika belum ada riwayat). */
-export function useLandingMedia(): LandingMedia {
+/**
+ * Gambar & klip asli dari pustaka pengguna untuk landing page (kosong jika belum login
+ * atau belum ada riwayat; landing memakai ilustrasi sebagai gantinya).
+ */
+export function useLandingMedia(signedIn: boolean): LandingMedia {
   const [media, setMedia] = useState<LandingMedia>({ videos: [], showcase: null, loaded: false })
 
   useEffect(() => {
+    if (!signedIn) return
     let cancelled = false
     getVideos()
       .then(async videos => {
@@ -30,7 +34,7 @@ export function useLandingMedia(): LandingMedia {
         if (!cancelled) setMedia(m => ({ ...m, loaded: true }))
       })
     return () => { cancelled = true }
-  }, [])
+  }, [signedIn])
 
   return media
 }

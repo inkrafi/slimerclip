@@ -1,10 +1,13 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Download, Loader2, Play, X } from 'lucide-react'
-import { ClipGenerateOptions, ClipProgress, Segment, UploadedFileInfo } from '@/lib/types'
+import { ClipGenerateOptions, ClipProgress, Me, Segment, UploadedFileInfo } from '@/lib/types'
 import { useVideoUpload } from '@/hooks/useVideoUpload'
 import { angleOf } from '@/lib/clip-meta'
-import { downloadUrl } from '@/lib/api'
+import CaptionStyleEditor from '@/components/CaptionStyleEditor'
+import { downloadUrl, extractVideoId } from '@/lib/api'
+import { loadCaptionStyle, saveCaptionStyle } from '@/lib/caption-presets'
+import { AUTH_ENABLED } from '@/lib/supabase'
 
 interface ClipGeneratorPanelProps {
   youtubeUrl: string
@@ -16,6 +19,8 @@ interface ClipGeneratorPanelProps {
   setUploadedFile: React.Dispatch<React.SetStateAction<UploadedFileInfo | null>>
   /** Link ke halaman klip tersimpan, jika sudah ada klip */
   clipsHref?: string
+  /** Akun yang login: menentukan sumber video yang boleh dipakai dan jatah render */
+  me: Me | null
 }
 
 type VideoSourceMode = 'url' | 'local'
@@ -40,12 +45,24 @@ export default function ClipGeneratorPanel({
   uploadedFile,
   setUploadedFile,
   clipsHref,
+  me,
 }: ClipGeneratorPanelProps) {
-  // Momen yang sudah tersimpan atau sedang dirender tidak dicentang otomatis, agar tidak dirender dua kali
+  // Unduh langsung dari YouTube hanya untuk admin (mode lokal selalu admin)
+  const canUseYoutube = !AUTH_ENABLED || !!me?.is_admin
+
+  // Sisa jatah render hari ini, dikurangi momen yang sedang antre/dirender (null = tanpa batas)
+  const activeCount = Object.values(progressMap).filter(p => p.status !== 'done' && p.status !== 'error').length
+  const renderLeft = me && me.render_daily_limit != null
+    ? Math.max(0, me.render_daily_limit - (me.renders_today ?? 0) - activeCount)
+    : null
+
+  // Momen yang sudah tersimpan atau sedang dirender tidak dicentang otomatis, agar tidak dirender dua kali;
+  // jika ada jatah harian, hanya momen teratas sebanyak sisa jatah
   const [selectedSegmentIds, setSelectedSegmentIds] = useState<number[]>(() =>
     segments
       .filter(s => !progressMap[s.segment_number] || progressMap[s.segment_number].status === 'error')
       .map(s => s.segment_number)
+      .slice(0, renderLeft ?? undefined)
   )
 
   const [options, setOptions] = useState<ClipGenerateOptions>({
@@ -54,20 +71,20 @@ export default function ClipGeneratorPanel({
     smart_tracking: true,
     split_screen: true,
     format: 'mp4',
-    caption_style: {
-      font: 'Arial',       // bold sudah diatur di style ASS
-      size: 72,            // satuan PlayRes 1080x1920
-      color: '#FFFFFF',
-      outline_color: '#000000',
-      outline_width: 4,
-      position: 'bottom',
-      background_box: false,
-      highlight_mode: 'word'
-    }
+    // Gaya caption terakhir yang dipakai di browser ini
+    caption_style: loadCaptionStyle(),
   })
+  useEffect(() => { saveCaptionStyle(options.caption_style) }, [options.caption_style])
+
+  // Pratinjau caption memakai kutipan momen terkuat di atas thumbnail video
+  const sampleWords = (segments.find(s => s.speaker_quote)?.speaker_quote || segments[0]?.topic || 'Momen terbaik dari podcast ini')
+    .replace(/["“”]/g, '').split(/\s+/).filter(Boolean).slice(0, 12)
+  const ytId = extractVideoId(youtubeUrl)
+  const previewBackground = ytId ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg` : undefined
 
   // File yang pernah diupload untuk video ini otomatis dipakai; tanpa itu, unduh dari YouTube
-  const [videoSourceMode, setVideoSourceMode] = useState<VideoSourceMode>(uploadedFile ? 'local' : 'url')
+  const [chosenSourceMode, setVideoSourceMode] = useState<VideoSourceMode>(uploadedFile ? 'local' : 'url')
+  const videoSourceMode: VideoSourceMode = canUseYoutube ? chosenSourceMode : 'local'
   const {
     isUploading, uploadProgress, uploadError, isDragging, fileInputRef,
     handleFileUpload, handleDrop, handleDragOver, handleDragLeave, resetUpload,
@@ -100,16 +117,18 @@ export default function ClipGeneratorPanel({
     if (isGenerating || selectedSegmentIds.length === 0) return false
     if (videoSourceMode === 'local' && !uploadedFile) return false
     if (videoSourceMode === 'url' && !youtubeUrl) return false
+    if (renderLeft !== null && selectedSegmentIds.length > renderLeft) return false
     return true
   }
 
   const blockedReason =
     selectedSegmentIds.length === 0 ? 'Pilih minimal satu momen. Momen yang sudah tersimpan tidak perlu dirender lagi.' :
-    videoSourceMode === 'local' && !uploadedFile ? 'Upload file videonya dulu, atau pilih unduh dari YouTube.' :
+    videoSourceMode === 'local' && !uploadedFile
+      ? (canUseYoutube ? 'Upload file videonya dulu, atau pilih unduh dari YouTube.' : 'Upload file videonya dulu.') :
+    renderLeft === 0 ? 'Jatah render hari ini sudah habis. Coba lagi besok.' :
+    renderLeft !== null && selectedSegmentIds.length > renderLeft ? `Sisa jatah render hari ini ${renderLeft} klip. Kurangi pilihan momen.` :
     null
 
-  const setStyle = (patch: Partial<ClipGenerateOptions['caption_style']>) =>
-    setOptions({ ...options, caption_style: { ...options.caption_style, ...patch } })
 
   return (
     <section aria-labelledby="render-title" className="rounded-lg border border-rule glass">
@@ -126,7 +145,13 @@ export default function ClipGeneratorPanel({
       {/* Sumber video */}
       <div className="p-5 border-b border-rule space-y-3">
         <h3 className="text-sm font-semibold text-ink">Video sumber</h3>
-        <div role="radiogroup" aria-label="Video sumber" className="grid grid-cols-2 rounded-md border border-rule p-0.5 text-sm">
+        {!canUseYoutube && (
+          <p className="text-sm text-ink-muted">
+            Upload file dari video YouTube yang sama
+            {me?.upload_max_mb ? ` (maks ${me.upload_max_mb} MB, ${me.upload_max_minutes} menit)` : ''}.
+          </p>
+        )}
+        {canUseYoutube && <div role="radiogroup" aria-label="Video sumber" className="grid grid-cols-2 rounded-md border border-rule p-0.5 text-sm">
           {([
             { id: 'local', label: 'File sendiri' },
             { id: 'url', label: 'Unduh dari YouTube' },
@@ -143,7 +168,7 @@ export default function ClipGeneratorPanel({
               {opt.label}
             </button>
           ))}
-        </div>
+        </div>}
 
         {videoSourceMode === 'local' ? (
           uploadedFile ? (
@@ -282,12 +307,35 @@ export default function ClipGeneratorPanel({
         </ul>
       </div>
 
+      {/* Caption */}
+      <div className="p-5 border-b border-rule space-y-3">
+        <label className="flex items-center justify-between gap-3">
+          <span className="text-sm font-semibold text-ink">Caption otomatis</span>
+          <input
+            type="checkbox"
+            checked={options.caption_enabled}
+            onChange={e => setOptions({ ...options, caption_enabled: e.target.checked })}
+            disabled={isGenerating}
+            className="size-4 accent-signal"
+          />
+        </label>
+        {options.caption_enabled && (
+          <CaptionStyleEditor
+            value={options.caption_style}
+            onChange={caption_style => setOptions(o => ({ ...o, caption_style }))}
+            disabled={isGenerating}
+            sampleWords={sampleWords}
+            backgroundUrl={previewBackground}
+          />
+        )}
+      </div>
+
       {/* Pengaturan */}
       <details className="group border-b border-rule">
         <summary className="flex items-center justify-between px-5 py-4 text-sm font-semibold text-ink cursor-pointer list-none [&::-webkit-details-marker]:hidden">
           Pengaturan render
           <span className="text-xs font-normal text-ink-muted group-open:hidden">
-            {options.resolution}p, caption {options.caption_enabled ? 'aktif' : 'mati'}
+            {options.resolution}p, {options.smart_tracking ? 'ikuti pembicara' : 'potong tengah'}
           </span>
         </summary>
         <div className="px-5 pb-5 space-y-4 text-sm">
@@ -325,42 +373,6 @@ export default function ClipGeneratorPanel({
               />
             </label>
           )}
-          <label className="flex items-center justify-between gap-3">
-            <span className="text-ink-muted">Caption otomatis</span>
-            <input
-              type="checkbox"
-              checked={options.caption_enabled}
-              onChange={e => setOptions({ ...options, caption_enabled: e.target.checked })}
-              disabled={isGenerating}
-              className="size-4 accent-signal"
-            />
-          </label>
-          {options.caption_enabled && (
-            <>
-              <label className="flex items-center justify-between gap-3">
-                <span className="text-ink-muted">Gaya caption</span>
-                <select
-                  className="rounded-md border border-rule bg-bay px-2 h-8 text-ink"
-                  value={options.caption_style.highlight_mode}
-                  onChange={e => setStyle({ highlight_mode: e.target.value as 'none' | 'word' })}
-                  disabled={isGenerating}
-                >
-                  <option value="word">Sorot per kata</option>
-                  <option value="none">Teks biasa</option>
-                </select>
-              </label>
-              <label className="flex items-center justify-between gap-3">
-                <span className="text-ink-muted">Warna teks</span>
-                <input
-                  type="color"
-                  value={options.caption_style.color}
-                  onChange={e => setStyle({ color: e.target.value })}
-                  disabled={isGenerating}
-                  className="h-8 w-12 rounded-md border border-rule bg-bay cursor-pointer"
-                />
-              </label>
-            </>
-          )}
         </div>
       </details>
 
@@ -376,6 +388,9 @@ export default function ClipGeneratorPanel({
           )}
         </button>
         {!isGenerating && blockedReason && <p className="mt-2 text-xs text-ink-muted">{blockedReason}</p>}
+        {renderLeft !== null && renderLeft > 0 && (
+          <p className="mt-2 text-xs text-ink-muted">Sisa jatah render hari ini: {renderLeft} dari {me?.render_daily_limit} klip.</p>
+        )}
       </div>
     </section>
   )

@@ -9,12 +9,14 @@ import StudioImage from './StudioImage'
 interface Props {
   media: LandingMedia
   onSubmit: (url: string) => string | void
+  /** Keterangan di bawah form (uji coba gratis / sisa jatah) */
+  note?: string
 }
 
 /** Lapisan parallax: bergeser vertikal sebanyak `distance` px saat hero di-scroll keluar. */
 const lift = (distance: number) => ({ transform: `translate3d(0, calc(var(--p, 0) * ${-distance}px), 0)` })
 
-export default function Hero({ media, onSubmit }: Props) {
+export default function Hero({ media, onSubmit, note }: Props) {
   const ref = useScrollProgress<HTMLElement>('pass')
   const ids = media.videos.map(v => v.video_id)
   // Pita thumbnail: video dari riwayat, atau ilustrasi jika riwayat masih kosong
@@ -49,6 +51,7 @@ export default function Hero({ media, onSubmit }: Props) {
 
         <div className="rise mt-8 max-w-2xl" style={{ animationDelay: '620ms' }}>
           <AnalyzeForm onSubmit={onSubmit} isLoading={false} size="lg" />
+          {note && <p className="mt-3 text-sm text-ink-muted">{note}</p>}
         </div>
       </div>
 

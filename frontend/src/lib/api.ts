@@ -1,22 +1,54 @@
-import { AnalysisResult, ClipGenerateOptions, RenderJob, RenderedClip, Segment, UploadedFileInfo, VideoDetail, VideoSummary } from '@/lib/types'
+import { AnalysisResult, ClipGenerateOptions, Me, RenderJob, RenderedClip, Segment, UploadedFileInfo, VideoDetail, VideoSummary } from '@/lib/types'
+import { accessToken } from '@/lib/supabase'
 
 export const BACKEND_URL = process.env.NEXT_PUBLIC_PYTHON_BACKEND_URL || 'http://127.0.0.1:5000'
+
+/** Error dari backend, lengkap dengan kode (mis. "quota_exhausted") agar UI bisa memberi jalan keluar. */
+export class ApiError extends Error {
+  constructor(message: string, public status: number, public code?: string) {
+    super(message)
+  }
+}
+
+/** Event browser saat backend menolak sesi login (token kedaluwarsa/dicabut). */
+export const AUTH_EXPIRED_EVENT = 'slimerclip:auth-expired'
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await accessToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
-    response = await fetch(`${BACKEND_URL}${path}`, init)
+    const headers = { ...(init?.headers as Record<string, string> | undefined), ...(await authHeaders()) }
+    response = await fetch(`${BACKEND_URL}${path}`, { ...init, headers })
   } catch {
     throw new Error('Backend tidak bisa dihubungi. Pastikan `python app.py` sedang berjalan.')
   }
   let data: unknown = null
   try { data = await response.json() } catch { /* bukan JSON */ }
   if (!response.ok) {
-    const message = (data as { error?: string } | null)?.error
-    throw new Error(message || `Backend membalas error ${response.status}.`)
+    const body = data as { error?: string; code?: string } | null
+    if (response.status === 401 && body?.code === 'auth_required') window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+    throw new ApiError(body?.error || `Backend membalas error ${response.status}.`, response.status, body?.code)
   }
   return data as T
 }
+
+// ── Akun ──
+export const getMe = () => request<Me>('/me')
+
+export const saveGeminiKey = (apiKey: string) =>
+  request<Me>('/me/gemini-key', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey }),
+  })
+
+export const deleteGeminiKey = () => request<Me>('/me/gemini-key', { method: 'DELETE' })
+
+export const deleteAccount = () => request<{ message: string }>('/me', { method: 'DELETE' })
 
 export const youtubeUrlFor = (videoId: string) => `https://www.youtube.com/watch?v=${videoId}`
 
@@ -87,14 +119,16 @@ export function isAllowedVideoFile(file: File): boolean {
 }
 
 /** Upload video ke backend. Pakai XHR (bukan fetch) agar progress upload bisa dipantau. */
-export function uploadVideo(file: File, videoId: string, onProgress?: (percent: number) => void): Promise<UploadedFileInfo> {
+export async function uploadVideo(file: File, videoId: string, onProgress?: (percent: number) => void): Promise<UploadedFileInfo> {
   const formData = new FormData()
   formData.append('video', file)
   formData.append('video_id', videoId)
+  const headers = await authHeaders()
 
   return new Promise<UploadedFileInfo>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${BACKEND_URL}/upload-video`)
+    for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value)
 
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100))
@@ -110,9 +144,9 @@ export function uploadVideo(file: File, videoId: string, onProgress?: (percent: 
       } else {
         try {
           const err = JSON.parse(xhr.responseText)
-          reject(new Error(err.error || `Upload gagal (${xhr.status})`))
+          reject(new ApiError(err.error || `Upload gagal (${xhr.status})`, xhr.status, err.code))
         } catch {
-          reject(new Error(`Upload gagal (${xhr.status})`))
+          reject(new ApiError(`Upload gagal (${xhr.status})`, xhr.status))
         }
       }
     })

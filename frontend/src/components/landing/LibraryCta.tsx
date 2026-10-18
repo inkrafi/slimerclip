@@ -9,9 +9,11 @@ import StudioImage from './StudioImage'
 interface Props {
   media: LandingMedia
   onSubmit: (url: string) => string | void
+  /** Keterangan di bawah form (uji coba gratis / sisa jatah) */
+  note?: string
 }
 
-export default function LibraryCta({ media, onSubmit }: Props) {
+export default function LibraryCta({ media, onSubmit, note }: Props) {
   const { ref, inView } = useInView<HTMLDivElement>(0.2)
   const recent = media.videos.slice(0, 3)
   const marquee = media.videos.length ? media.videos.map(v => v.video_id) : [undefined, undefined, undefined, undefined]
@@ -62,6 +64,7 @@ export default function LibraryCta({ media, onSubmit }: Props) {
         </h2>
         <div className="mt-10 max-w-2xl mx-auto text-left">
           <AnalyzeForm onSubmit={onSubmit} isLoading={false} size="lg" />
+          {note && <p className="mt-3 text-sm text-ink-muted">{note}</p>}
         </div>
       </section>
     </>

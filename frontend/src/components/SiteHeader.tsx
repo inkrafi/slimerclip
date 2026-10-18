@@ -4,16 +4,19 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Toaster } from 'sonner'
+import AccountMenu from '@/components/AccountMenu'
+import { useAuth } from '@/components/AuthProvider'
 import RenderIndicator from '@/components/RenderIndicator'
 import { syne } from '@/lib/fonts'
 
 const NAV = [
-  { href: '/', label: 'Ruang kerja', match: (p: string) => p === '/' || p.startsWith('/video') },
-  { href: '/riwayat', label: 'Riwayat', match: (p: string) => p.startsWith('/riwayat') },
+  { href: '/', label: 'Ruang kerja', match: (p: string) => p === '/' || p.startsWith('/video'), wide: true },
+  { href: '/riwayat', label: 'Riwayat', match: (p: string) => p.startsWith('/riwayat'), wide: false },
 ]
 
 export default function SiteHeader() {
   const pathname = usePathname() || '/'
+  const { signedIn } = useAuth()
 
   return (
     <>
@@ -40,13 +43,14 @@ export default function SiteHeader() {
                   key={item.href}
                   href={item.href}
                   aria-current={active ? 'page' : undefined}
-                  className={`h-14 px-3 flex items-center border-b-2 -mb-px ${active ? 'border-signal text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}
+                  className={`h-14 px-3 items-center border-b-2 -mb-px ${item.wide || !signedIn ? 'hidden sm:flex' : 'flex'} ${active ? 'border-signal text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}
                 >
                   {item.label}
                 </Link>
               )
             })}
           </nav>
+          <AccountMenu />
           </div>
         </div>
       </header>

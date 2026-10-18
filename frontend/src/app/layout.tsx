@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import './globals.css'
+import { AuthProvider } from '@/components/AuthProvider'
 import SiteHeader from '@/components/SiteHeader'
 import { jakarta, onest, syne } from '@/lib/fonts'
 
@@ -12,8 +13,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="id" className={`${jakarta.variable} ${syne.variable} ${onest.variable}`}>
       <body className="min-h-screen">
-        <SiteHeader />
-        <main className="mx-auto max-w-6xl px-4 sm:px-6 pb-24">{children}</main>
+        <AuthProvider>
+          <SiteHeader />
+          <main className="mx-auto max-w-6xl px-4 sm:px-6 pb-24">{children}</main>
+        </AuthProvider>
       </body>
     </html>
   )

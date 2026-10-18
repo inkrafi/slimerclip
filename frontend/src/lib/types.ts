@@ -1,3 +1,7 @@
+import type { CaptionStyle } from '@/lib/caption-presets'
+
+export type { CaptionStyle }
+
 export interface Hooks {
   hook_pertanyaan: string
   hook_pernyataan: string
@@ -55,17 +59,6 @@ export interface AnalysisResult {
   video_metadata?: VideoMetadata
   scoring_version?: number
   from_cache?: boolean
-}
-
-export interface CaptionStyle {
-  font: string
-  size: number
-  color: string
-  outline_color: string
-  outline_width: number
-  position: 'top' | 'center' | 'bottom'
-  background_box: boolean
-  highlight_mode: 'none' | 'word' | 'line'
 }
 
 export interface ClipGenerateOptions {
@@ -157,4 +150,22 @@ export interface RenderJob {
   finished_at: number | null
   download: { status: string; progress: number }
   segments: Record<string, RenderJobSegment>
+}
+
+/** Akun yang sedang login (GET /me). Batas bernilai null = tanpa batas (admin). */
+export interface Me {
+  id: string
+  email: string
+  name: string
+  avatar_url: string
+  is_admin: boolean
+  auth_enabled: boolean
+  has_gemini_key: boolean
+  gemini_key_hint: string | null
+  free_analyses_limit: number | null
+  free_analyses_left: number | null
+  render_daily_limit: number | null
+  renders_today: number | null
+  upload_max_mb: number | null
+  upload_max_minutes: number | null
 }

@@ -62,6 +62,17 @@ class CaptionService:
             
         return transcribed_segments
 
+    def transcribe_plain(self, media_path: str) -> list:
+        """Transkrip cepat tanpa timestamp per kata (untuk analisis video utuh)."""
+        self._load_model()
+        segments, info = self.model.transcribe(
+            media_path,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500)
+        )
+        print(f"Terdeteksi bahasa: {info.language} dengan probabilitas {info.language_probability}")
+        return [{'start': seg.start, 'end': seg.end, 'text': seg.text} for seg in segments]
+
     def format_time_ass(self, seconds: float) -> str:
         """Format detik ke format waktu ASS: H:MM:SS.CS"""
         h = int(seconds // 3600)
@@ -98,84 +109,118 @@ class CaptionService:
         """Hapus karakter yang dianggap tag/escape oleh ASS ({ } \\) dari teks transkrip."""
         return text.replace('{', '(').replace('}', ')').replace('\\', '/').replace('\n', ' ')
 
+    # Halaman caption berganti saat pembicara berhenti selama ini (detik) atau kalimat selesai
+    PAGE_GAP_SECONDS = 0.7
+
+    @staticmethod
+    def _caption_words(segments: list, uppercase: bool) -> list:
+        """Semua kata (dengan waktu) dari hasil Whisper; tanda baca ringan di akhir kata dibuang."""
+        words = []
+        for segment in segments:
+            for w in segment.get('words') or []:
+                text = CaptionService._escape_ass(w['word'].strip())
+                ends_sentence = text[-1:] in '.?!'
+                text = text.rstrip('.,;:')
+                if not text:
+                    continue
+                words.append({'start': float(w['start']), 'end': float(w['end']),
+                              'text': text.upper() if uppercase else text, 'stop': ends_sentence})
+        return words
+
+    def _pages(self, words: list, per_page: int) -> list:
+        pages, page = [], []
+        for w in words:
+            if page and (len(page) >= per_page or page[-1]['stop']
+                         or w['start'] - page[-1]['end'] > self.PAGE_GAP_SECONDS):
+                pages.append(page)
+                page = []
+            page.append(w)
+        if page:
+            pages.append(page)
+        return pages
+
     def generate_ass(self, segments: list, output_path: str, style_config: dict = None):
         """
-        Generate file .ass dari hasil transkrip dengan word-by-word karaoke style.
+        Generate file .ass: kata dikelompokkan per halaman (1–6 kata), kata yang sedang diucapkan
+        disorot (warna/kotak) dengan efek pop. style_config sudah divalidasi sanitize_caption_style.
         """
-        if style_config is None:
-            style_config = {}
-            
-        # Default config (Style B: Karaoke Word-by-Word)
-        # Ukuran dalam satuan PlayRes (1080x1920), jadi 72 ≈ 3.75% tinggi layar
-        font = (style_config.get('font') or 'Arial').strip()
-        # Bold diatur lewat flag style, bukan nama font ("Arial Bold" tidak dikenali libass)
-        if font.lower().endswith(' bold'):
-            font = font[:-5].strip()
-        size = style_config.get('size', 72)
-        color = self.hex_to_ass_color(style_config.get('color', '#FFFFFF'))
-        outline_color = self.hex_to_ass_color(style_config.get('outline_color', '#000000'))
-        outline_width = style_config.get('outline_width', 4)
-        highlight_color = self.hex_to_ass_color(style_config.get('highlight_color', '#FFFF00')) # Kuning
-        karaoke = style_config.get('highlight_mode', 'word') == 'word'
+        from caption_styles import FONTS, sanitize_caption_style
+        style = sanitize_caption_style(style_config)
+        c = self.hex_to_ass_color
+        base, highlight, outline = c(style['color']), c(style['highlight_color']), c(style['outline_color'])
+        size, ow, shadow = style['size'], style['outline_width'], style['shadow']
+        y = int(1920 * style['position_y'] / 100)
 
-        # Pada tag \k, kata yang belum diucapkan memakai SecondaryColour dan berubah
-        # ke PrimaryColour saat diucapkan. Jadi untuk karaoke: Primary = highlight.
-        primary, secondary = (highlight_color, color) if karaoke else (color, highlight_color)
+        if style['background']:
+            # BorderStyle 3: kotak transparan di belakang baris (warna = OutlineColour, padding = Outline)
+            border_style, line_outline, outline_colour, back_colour = 3, max(10, size // 5), '&H38000000', '&H00000000'
+            ow, shadow = 0, 0
+        else:
+            border_style, line_outline, outline_colour, back_colour = 1, ow, outline, '&H80000000'
 
-        # Posisi: 2 (Bawah), 5 (Tengah), 8 (Atas)
-        pos = style_config.get('position', 'bottom')
-        alignment = 2
-        if pos == 'center': alignment = 5
-        elif pos == 'top': alignment = 8
-        
-        # ASS Header (Resolusi PlayRes disetel untuk video 9:16)
-        ass_content = f"""[Script Info]
+        # Tag ASS untuk kata aktif, dan untuk mengembalikan gaya normal sesudahnya.
+        # Kotak sorotan = garis tepi tebal berwarna di sekitar kata (libass menggambarnya di bawah teks).
+        pop = style['animation'] == 'pop'
+        grow = r'\fscx100\fscy100\t(0,90,\fscx110\fscy110)' if pop else ''
+        if style['highlight_style'] == 'box':
+            pad = max(10, int(size * 0.2))
+            active = '{' + rf'\3c{highlight}\bord{pad}\shad0' + grow + '}'
+        elif style['highlight_style'] == 'color':
+            active = '{' + rf'\c{highlight}' + grow + '}'
+        else:
+            active = '{' + grow + '}' if grow else ''
+        # Kotak sorotan butuh ruang ekstra agar tidak menempel ke kata di sebelahnya (\h = spasi tetap)
+        gap = r'\h' if style['highlight_style'] == 'box' else ''
+        normal = ('{' + rf'\c{base}\3c{outline_colour}\bord{line_outline}\shad{shadow}\fscx100\fscy100' + '}'
+                  if active else '')
+
+        header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
-WrapStyle: 1
+WrapStyle: 0
+ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font},{size},{primary},{secondary},{outline_color},&H80000000,-1,0,0,0,100,100,0,0,1,{outline_width},0,{alignment},60,60,220,1
+Style: Default,{FONTS[style['font']]},{size},{base},{base},{outline_colour},{back_colour},0,0,0,0,100,100,0,0,{border_style},{line_outline},{shadow},5,80,80,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-        # Generate Dialogues dengan karaoke tags ({\k})
-        for segment in segments:
-            words = [w for w in segment['words'] if self._escape_ass(w['word'].strip())]
-
-            # Jika menggunakan word-by-word highlight (Style B)
-            if karaoke and words:
-                # Dialog dimulai tepat saat kata pertama diucapkan
-                d_start = words[0]['start']
-                d_end = max(segment['end'], words[-1]['end'])
-
-                # Durasi \k (centisecond) dihitung dari selisih waktu mulai kata berikutnya,
-                # sehingga jeda antar kata ikut terhitung dan highlight tidak makin telat.
-                # Dihitung kumulatif dari d_start agar error pembulatan tidak menumpuk.
-                offsets = [int(round((w['start'] - d_start) * 100)) for w in words]
-                offsets.append(int(round((words[-1]['end'] - d_start) * 100)))
-
-                parts = []
-                for i, w in enumerate(words):
-                    dur_cs = max(offsets[i + 1] - offsets[i], 1)
-                    parts.append(f"{{\\k{dur_cs}}}{self._escape_ass(w['word'].strip())}")
-                dialogue_text = " ".join(parts)
-
-                ass_content += (f"Dialogue: 0,{self.format_time_ass(d_start)},{self.format_time_ass(d_end)}"
-                                f",Default,,0,0,0,,{dialogue_text}\n")
-            else:
-                # Standard line-by-line (tanpa efek)
-                clean_text = self._escape_ass(segment['text'].strip())
-                if not clean_text:
+        events = []
+        pages = self._pages(self._caption_words(segments, style['uppercase']), style['words_per_line'])
+        for p_idx, page in enumerate(pages):
+            next_start = pages[p_idx + 1][0]['start'] if p_idx + 1 < len(pages) else None
+            page_end = page[-1]['end'] + 0.3
+            if next_start is not None:
+                page_end = max(page[-1]['end'], min(page_end, next_start))
+            for i, w in enumerate(page):
+                ev_start = page[0]['start'] if i == 0 else w['start']
+                ev_end = page[i + 1]['start'] if i + 1 < len(page) else page_end
+                if ev_end - ev_start < 0.04:
                     continue
-                ass_content += (f"Dialogue: 0,{self.format_time_ass(segment['start'])},{self.format_time_ass(segment['end'])}"
-                                f",Default,,0,0,0,,{clean_text}\n")
+                prefix = '{' + rf'\an5\pos(540,{y})' + (r'\fad(80,0)' if pop and i == 0 else '') + '}'
+                text = ' '.join(f'{gap}{active}{x["text"]}{normal}{gap}' if j == i and active else x['text']
+                                for j, x in enumerate(page))
+                events.append(f"Dialogue: 0,{self.format_time_ass(ev_start)},{self.format_time_ass(ev_end)}"
+                              f",Default,,0,0,0,,{prefix}{text}")
 
         with open(output_path, "w", encoding="utf-8") as f:
-            f.write(ass_content)
-            
-        print(f"File ASS berhasil dibuat: {output_path}")
+            f.write(header + "\n".join(events) + "\n")
+
+        print(f"File ASS berhasil dibuat: {output_path} ({len(pages)} halaman caption)")
         return output_path
+
+
+_shared = None
+_shared_lock = threading.Lock()
+
+
+def get_caption_service() -> CaptionService:
+    """Satu instance untuk seluruh backend, agar model Whisper hanya dimuat sekali."""
+    global _shared
+    with _shared_lock:
+        if _shared is None:
+            _shared = CaptionService()
+    return _shared

@@ -7,11 +7,10 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
-from requests import Session
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
-from prompt_templates import get_clip_analysis_prompt
+from prompt_templates import clip_analysis_schema, get_clip_analysis_prompt, target_segment_count
 from scoring import score_segments
+from transcript_service import TranscriptUnavailable, get_transcript_lines
 from youtube_utils import YTDLP_JS_RUNTIMES, extract_video_id, is_youtube_url
 
 load_dotenv()
@@ -22,9 +21,14 @@ GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "180")) * 1000
 _client = None
 
 
-def _get_client() -> genai.Client:
-    """Buat client Gemini saat pertama dipakai (agar backend tetap bisa start tanpa API key)."""
+def _get_client(api_key: str | None = None) -> genai.Client:
+    """
+    Client Gemini. Tanpa api_key: client milik server (dibuat saat pertama dipakai, agar backend
+    tetap bisa start tanpa GEMINI_API_KEY). Dengan api_key: client sekali pakai untuk key pengguna.
+    """
     global _client
+    if api_key:
+        return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS))
     if _client is None:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
@@ -33,8 +37,8 @@ def _get_client() -> genai.Client:
     return _client
 
 
-def get_video_metadata(youtube_url: str) -> dict:
-    """Mengambil metadata video YouTube menggunakan yt-dlp (tanpa download video)."""
+def _extract_info(youtube_url: str) -> dict | None:
+    """Info mentah yt-dlp (tanpa download video); dipakai untuk metadata dan daftar subtitle."""
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -45,70 +49,31 @@ def get_video_metadata(youtube_url: str) -> dict:
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=False) or {}
-        return {
-            "title": info.get("title") or "",
-            "channel": info.get("uploader") or "",
-            "duration": info.get("duration") or 0,
-            "view_count": info.get("view_count") or 0,
-            "description": (info.get("description") or "")[:1000],  # Ambil max 1000 karakter
-            "tags": info.get("tags") or [],
-            "thumbnail": info.get("thumbnail") or "",
-            # Grafik "Most replayed" YouTube: intensitas tonton-ulang per potongan waktu (0–1)
-            "heatmap": [
-                {"start_time": round(p["start_time"], 2), "end_time": round(p["end_time"], 2), "value": round(p["value"], 4)}
-                for p in (info.get("heatmap") or [])
-                if p.get("start_time") is not None and p.get("end_time") is not None and p.get("value") is not None
-            ],
-        }
+            return ydl.extract_info(youtube_url, download=False) or {}
     except Exception as e:
         print(f"[Metadata] Gagal mengambil metadata: {e}")
-    return {}
+    return None
 
 
-def _fetch_transcript(video_id: str):
-    """Ambil transkrip: utamakan Indonesia/Inggris, lalu terjemahan, lalu transkrip apa pun."""
-    session = Session()
-    # Verifikasi SSL tetap aktif. Hanya jika muncul SSLError (mis. antivirus/proxy yang
-    # mengintersep HTTPS), bisa dimatikan sementara dengan TRANSCRIPT_INSECURE_SSL=1 di .env.
-    if os.getenv("TRANSCRIPT_INSECURE_SSL", "0") == "1":
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        session.verify = False
-        print("[Transcript] PERINGATAN: verifikasi SSL dimatikan (TRANSCRIPT_INSECURE_SSL=1)")
-
-    transcript_list = YouTubeTranscriptApi(http_client=session).list(video_id)
-
-    try:
-        return transcript_list.find_transcript(['id', 'en']).fetch()
-    except NoTranscriptFound:
-        pass
-
-    for t in transcript_list:
-        if t.is_translatable:
-            for lang in ('id', 'en'):
-                try:
-                    return t.translate(lang).fetch()
-                except Exception:
-                    continue
-
-    for t in transcript_list:
-        return t.fetch()
-
-    raise NoTranscriptFound(video_id, ['id', 'en'], transcript_list)
-
-
-def _transcript_lines(raw_transcript) -> list:
-    """Transkrip mentah → [(start_detik, end_detik, teks), ...] urut waktu."""
-    lines = []
-    for item in raw_transcript:
-        start_sec = getattr(item, 'start', None)
-        text = getattr(item, 'text', None)
-        if start_sec is None or not text:
-            continue
-        lines.append((float(start_sec), float(start_sec + (getattr(item, 'duration', 0) or 0)), text.replace("\n", " ")))
-    lines.sort(key=lambda l: l[0])
-    return lines
+def get_video_metadata(info: dict | None) -> dict:
+    """Metadata ringkas dari info yt-dlp."""
+    if not info:
+        return {}
+    return {
+        "title": info.get("title") or "",
+        "channel": info.get("uploader") or "",
+        "duration": info.get("duration") or 0,
+        "view_count": info.get("view_count") or 0,
+        "description": (info.get("description") or "")[:1000],  # Ambil max 1000 karakter
+        "tags": info.get("tags") or [],
+        "thumbnail": info.get("thumbnail") or "",
+        # Grafik "Most replayed" YouTube: intensitas tonton-ulang per potongan waktu (0–1)
+        "heatmap": [
+            {"start_time": round(p["start_time"], 2), "end_time": round(p["end_time"], 2), "value": round(p["value"], 4)}
+            for p in (info.get("heatmap") or [])
+            if p.get("start_time") is not None and p.get("end_time") is not None and p.get("value") is not None
+        ],
+    }
 
 
 def _format_transcript(lines: list) -> str:
@@ -120,15 +85,49 @@ def _format_transcript(lines: list) -> str:
     return "\n".join(out)
 
 
-def _call_gemini(system_prompt: str, user_text: str, max_attempts: int = 3) -> dict:
-    """Panggil Gemini (mode output JSON) dan parse hasilnya. Retry jika JSON tidak valid."""
+def validate_api_key(api_key: str) -> str | None:
+    """Cek API key Gemini pengguna dengan request ringan. Return pesan error, atau None jika valid."""
+    try:
+        _get_client(api_key).models.get(model=GEMINI_MODEL)
+        return None
+    except genai_errors.APIError as e:
+        if e.code in (400, 401, 403):
+            return "API key ditolak Google. Pastikan key disalin utuh dari Google AI Studio."
+        if e.code == 429:
+            return None  # key valid, hanya sedang kena limit
+        return _gemini_error_message(e)
+    except Exception as e:
+        return f"API key tidak bisa dicek: {e}"
+
+
+def _looser_schema(schema: dict) -> dict | None:
+    """minItems > 5 → 5; sudah 5 atau kurang → tanpa skema."""
+    segments = schema["properties"]["segments"]
+    if segments.get("minItems", 0) > 5:
+        print(f"[Gemini] Skema ditolak model {GEMINI_MODEL}, mencoba dengan minimal 5 momen")
+        return {**schema, "properties": {**schema["properties"], "segments": {**segments, "minItems": 5}}}
+    print(f"[Gemini] Skema ditolak model {GEMINI_MODEL}, mencoba tanpa skema")
+    return None
+
+
+def _call_gemini(system_prompt: str, user_text: str, max_attempts: int = 3, api_key: str | None = None,
+                 schema: dict | None = None) -> dict:
+    """Panggil Gemini (mode output JSON, opsional dengan skema) dan parse hasilnya. Retry jika JSON tidak valid."""
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
         response_mime_type="application/json",
+        response_json_schema=schema,
     )
     last_error = None
     for attempt in range(1, max_attempts + 1):
-        response = _get_client().models.generate_content(model=GEMINI_MODEL, contents=user_text, config=config)
+        try:
+            response = _get_client(api_key).models.generate_content(model=GEMINI_MODEL, contents=user_text, config=config)
+        except genai_errors.ClientError as e:
+            # Skema terlalu rumit untuk model ini (400 INVALID_ARGUMENT tanpa keterangan) → longgarkan
+            # minItems, lalu tanpa skema sama sekali. Error API key tetap diteruskan.
+            if schema is not None and e.code == 400 and "api key" not in str(e).lower():
+                return _call_gemini(system_prompt, user_text, max_attempts, api_key, schema=_looser_schema(schema))
+            raise
         raw_text = (response.text or "").strip()
 
         # Jaga-jaga jika model tetap membungkus dengan ```json ... ``` atau menambah teks lain
@@ -145,9 +144,14 @@ def _call_gemini(system_prompt: str, user_text: str, max_attempts: int = 3) -> d
     raise last_error
 
 
-def _gemini_error_message(e: Exception) -> str:
+def _gemini_error_message(e: Exception, own_key: bool = False) -> str:
     """Terjemahkan error Gemini menjadi pesan yang jelas untuk user."""
     msg = str(e)
+    if own_key and isinstance(e, genai_errors.APIError):
+        if e.code in (400, 401, 403) and ("API_KEY" in msg or "API key" in msg or e.code != 400):
+            return "API key Gemini milikmu ditolak Google. Perbarui key di halaman Pengaturan."
+        if e.code in (402, 429):
+            return "Kuota API key Gemini milikmu sedang habis. Tunggu beberapa saat, atau cek limitnya di Google AI Studio."
     if isinstance(e, RuntimeError) and "GEMINI_API_KEY" in msg:
         return "GEMINI_API_KEY belum diisi. Cek file backend/.env."
     if isinstance(e, genai_errors.APIError):
@@ -166,9 +170,13 @@ def _gemini_error_message(e: Exception) -> str:
     return f"Terjadi kesalahan saat memanggil Gemini: {msg}"
 
 
-def analyze_youtube_video(youtube_url: str) -> dict:
+def analyze_youtube_video(youtube_url: str, api_key: str | None = None, media_path: str | None = None,
+                          allow_download: bool = False) -> dict:
     """
     Ambil transkrip + metadata video YouTube lalu kirim ke Gemini untuk dianalisis.
+
+    - api_key: key Gemini milik pengguna (None = key server)
+    - media_path / allow_download: sumber transkripsi Whisper jika YouTube tidak memberi transkrip
 
     Return:
     - dict berisi hasil analisis jika berhasil
@@ -181,25 +189,20 @@ def analyze_youtube_video(youtube_url: str) -> dict:
     if not video_id:
         return {"error": "Tidak bisa menemukan ID Video dari URL tersebut."}
 
-    # Ambil transkrip
-    try:
-        transcript_lines = _transcript_lines(_fetch_transcript(video_id))
-        formatted_transcript = _format_transcript(transcript_lines)
-        if not formatted_transcript:
-            raise NoTranscriptFound(video_id, ['id', 'en'], None)
-    except TranscriptsDisabled:
-        return {"error": "Subtitles/Transcript dinonaktifkan untuk video ini. AI tidak bisa menganalisis tanpa teks percakapan."}
-    except NoTranscriptFound:
-        return {"error": "Tidak ada transkrip Bahasa Indonesia atau Inggris yang ditemukan di video ini."}
-    except Exception as e:
-        err_msg = str(e)
-        # Pesan error XML parser 'no element found' yang umum
-        if "no element found" in err_msg.lower() or "expat" in err_msg.lower():
-            return {"error": "Gagal mengambil transkrip video karena format data kosong/tidak didukung dari YouTube. Pastikan video memiliki subtitle publik."}
-        return {"error": f"Gagal mengambil transkrip video: {err_msg}"}
+    # Metadata dulu: info yt-dlp yang sama dipakai untuk mencari subtitle cadangan
+    info = _extract_info(youtube_url)
+    metadata = get_video_metadata(info)
 
-    # Ambil metadata
-    metadata = get_video_metadata(youtube_url)
+    # Transkrip (cache → youtube-transcript-api → subtitle yt-dlp → Whisper lokal)
+    try:
+        transcript_lines, transcript_source = get_transcript_lines(video_id, youtube_url, info,
+                                                                 media_path=media_path, allow_download=allow_download)
+    except TranscriptUnavailable as e:
+        return {"error": str(e), "code": "transcript_unavailable"}
+    formatted_transcript = _format_transcript(transcript_lines)
+    if not formatted_transcript:
+        return {"error": "Transkrip video kosong, tidak ada percakapan yang bisa dianalisis."}
+
     metadata_text = "METADATA VIDEO TIDAK TERSEDIA"
     if metadata:
         metadata_text = f"""
@@ -218,24 +221,31 @@ Deskripsi Singkat: {metadata.get('description')}
     )
 
     try:
-        result_data = _call_gemini(get_clip_analysis_prompt(), user_text)
+        count = target_segment_count(metadata.get("duration") or (transcript_lines[-1][1] if transcript_lines else 0))
+        result_data = _call_gemini(get_clip_analysis_prompt(count), user_text, api_key=api_key,
+                                   schema=clip_analysis_schema(count))
     except json.JSONDecodeError:
         return {"error": "AI tidak mengembalikan format JSON yang valid setelah 3 percobaan. Coba video lain atau coba lagi."}
     except Exception as e:
         print(f"[Gemini] Error: {e!r}")
-        return {"error": _gemini_error_message(e)}
+        return {"error": _gemini_error_message(e, own_key=bool(api_key))}
 
     if not isinstance(result_data, dict) or not isinstance(result_data.get("segments"), list):
         return {"error": "Format hasil analisis AI tidak sesuai (tidak ada daftar segments). Coba lagi."}
 
     # Skor akhir: gabungan penilaian AI, data "Most replayed" YouTube, dan struktur momen
     video_duration = metadata.get("duration") or (transcript_lines[-1][1] if transcript_lines else 0)
+    from_ai = len(result_data["segments"])
     result_data["segments"] = score_segments(
         result_data["segments"], transcript_lines, metadata.get("heatmap") or [], video_duration
     )
+    print(f"[Analisis] {video_id}: diminta {count} momen, Gemini memberi {from_ai}, "
+          f"tersisa {len(result_data['segments'])} setelah dirapikan")
+    result_data["total_clip_recommendations"] = len(result_data["segments"])
     if not result_data["segments"]:
         return {"error": "AI tidak menemukan momen dengan timestamp yang valid. Coba analisis ulang."}
     result_data["scoring_version"] = 2
+    result_data["transcript_source"] = transcript_source
 
     if metadata:
         result_data["video_metadata"] = metadata

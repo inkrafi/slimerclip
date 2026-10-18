@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useAuth } from '@/components/AuthProvider'
 import { getJobs, isJobActive, RENDER_STARTED_EVENT } from '@/lib/api'
 import { RenderJob } from '@/lib/types'
 
@@ -17,6 +18,7 @@ const POLL_MS = 2000
 export default function RenderIndicator() {
   const pathname = usePathname()
   const router = useRouter()
+  const { signedIn } = useAuth()
   const [active, setActive] = useState<RenderJob[]>([])
   const watched = useRef<Map<string, RenderJob>>(new Map())
 
@@ -43,13 +45,13 @@ export default function RenderIndicator() {
   }, [router])
 
   const check = useCallback(() => {
-    getJobs().then(applyJobs).catch(() => {})
-  }, [applyJobs])
+    if (signedIn) getJobs().then(applyJobs).catch(() => {})
+  }, [applyJobs, signedIn])
 
-  // Periksa saat berpindah halaman dan saat render baru dimulai
+  // Periksa saat berpindah halaman dan saat render baru dimulai (hanya jika sudah login)
   useEffect(() => {
-    getJobs().then(applyJobs).catch(() => {})
-  }, [pathname, applyJobs])
+    if (signedIn) getJobs().then(applyJobs).catch(() => {})
+  }, [pathname, applyJobs, signedIn])
   useEffect(() => {
     const onStart = () => { check() }
     window.addEventListener(RENDER_STARTED_EVENT, onStart)

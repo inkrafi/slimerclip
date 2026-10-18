@@ -32,6 +32,7 @@ DETECT_WIDTH = 960
 MIN_FACE_FRAC = 0.04       # wajah lebih kecil dari 4% tinggi frame diabaikan (penonton/latar)
 SHOT_CUT_DIFF = 28.0       # beda rata-rata thumbnail grayscale antar sampel = pergantian shot
 MIN_RUN_SECONDS = 1.5      # tata letak minimal bertahan selama ini (anti kedip)
+MIN_SWITCH_SECONDS = 1.0   # perpindahan kamera minimal berjarak selama ini, juga antar-shot sumber
 ACTIVITY_WINDOW = 1.2      # detik: perataan aktivitas mulut
 DOMINANCE_RATIO = 1.6      # satu orang dianggap dominan jika aktivitasnya ≥ 1.6x yang lain
 QUIET_LEVEL = 4.0          # di bawah ini dianggap tidak ada yang bicara
@@ -242,7 +243,38 @@ class SpeakerLayoutPlanner:
                     runs.append([r0, r1, "split", pos])
                 else:
                     runs.append([r0, r1, "zoom", pos[lab]])
-        return runs
+        return self._stabilize(runs)
+
+    @staticmethod
+    def _same_framing(a, b) -> bool:
+        """Dua run menyorot tempat yang (hampir) sama: pergantiannya tidak perlu terlihat."""
+        if a[2] != b[2]:
+            return False
+        if a[2] == "center":
+            return True
+        pa, pb = (a[3], b[3]) if a[2] == "split" else ([a[3]], [b[3]])
+        return all(abs(x[0] - y[0]) < max(x[2], y[2]) * 0.5 and abs(x[1] - y[1]) < max(x[2], y[2]) * 0.5
+                   for x, y in zip(pa, pb))
+
+    def _stabilize(self, runs):
+        """
+        Batas MIN_RUN_SECONDS hanya berlaku di dalam satu shot. Shot sumber yang pendek
+        (atau pergantian shot palsu karena gerakan/cahaya) bisa menghasilkan run sangat pendek
+        yang terlihat seperti glitch, jadi run < MIN_SWITCH_SECONDS ikut tata letak sebelumnya,
+        dan run berurutan dengan sorotan yang sama digabung.
+        """
+        min_len = int(round(MIN_SWITCH_SECONDS * SAMPLE_FPS))
+        out = []
+        for r in runs:
+            r = list(r)
+            if out and ((r[1] - r[0] + 1) < min_len or self._same_framing(out[-1], r)):
+                out[-1][1] = r[1]
+            else:
+                out.append(r)
+        if len(out) > 1 and (out[0][1] - out[0][0] + 1) < min_len:
+            out[1][0] = out[0][0]
+            out.pop(0)
+        return out
 
     # ── 5: filter graph FFmpeg ─────────────────────────────────────
     @staticmethod
@@ -294,21 +326,23 @@ class SpeakerLayoutPlanner:
         zoom_spans, split_spans = [], []
         summary = {"full": 0.0, "zoom": 0.0, "split": 0.0, "shots": len(shots)}
 
-        for r0, r1, kind, data in runs:
-            t_end = t_of(r1 + 1)
+        for i_run, (r0, r1, kind, data) in enumerate(runs):
+            # Run terakhir berlaku sampai klip habis (frame setelah sampel terakhir tidak boleh kosong)
+            t_end = t_of(r1 + 1) if i_run < len(runs) - 1 else 1e6
             span = (t_of(r0), t_end)
+            seconds = t_of(r1 + 1) - t_of(r0)   # durasi asli, untuk ringkasan
             if kind == "single" and data[2] < src_h * 0.10:
                 kind = "zoom"   # orang sendirian tapi kecil di frame → perbesar
             if kind in ("center", "single"):
                 cx = src_w / 2 if kind == "center" else data[0]
                 full_x.append((t_end, clamp(cx - full_w / 2, 0, src_w - full_w)))
-                summary["full"] += span[1] - span[0]
+                summary["full"] += seconds
             elif kind == "zoom":
                 cx, cy, _ = data
                 zoom_x.append((t_end, clamp(cx - zoom_w / 2, 0, src_w - zoom_w)))
                 zoom_y.append((t_end, clamp(cy - zoom_h * 0.35, 0, src_h - zoom_h)))
                 zoom_spans.append(span)
-                summary["zoom"] += span[1] - span[0]
+                summary["zoom"] += seconds
             else:
                 (ax, ay, _), (bx, by, _) = data
                 top_x.append((t_end, clamp(ax - split_w / 2, 0, src_w - split_w)))
@@ -316,7 +350,7 @@ class SpeakerLayoutPlanner:
                 bot_x.append((t_end, clamp(bx - split_w / 2, 0, src_w - split_w)))
                 bot_y.append((t_end, clamp(by - split_h * 0.4, 0, src_h - split_h)))
                 split_spans.append(span)
-                summary["split"] += span[1] - span[0]
+                summary["split"] += seconds
 
         # Nilai cabang di luar run-nya tidak terlihat (tertutup overlay), tapi harus valid:
         # pakai nilai run terdekat agar tetap di dalam frame.
@@ -324,8 +358,10 @@ class SpeakerLayoutPlanner:
         branches = ["full"] + (["zoom"] if zoom_spans else []) + (["split"] if split_spans else [])
         n_split = len(branches) + (1 if split_spans else 0)
 
+        # Rentang setengah terbuka [a, b) dengan perbandingan yang sama seperti ekspresi crop (lt):
+        # tanpa celah antar-run, jadi tidak ada frame yang jatuh ke crop dasar saat berpindah
         def enable(spans):
-            return "+".join(f"between(t,{a:.2f},{b - 0.001:.2f})" for a, b in spans)
+            return "+".join(f"gte(t,{a:.2f})*lt(t,{b:.2f})" for a, b in spans)
 
         half_h = _even(out_h / 2)
         parts = [f"[0:v]split={n_split}" + "".join(f"[s{i}]" for i in range(n_split))]

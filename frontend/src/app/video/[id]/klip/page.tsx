@@ -3,6 +3,7 @@
 import { use, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Download, Loader2 } from 'lucide-react'
+import RequireAuth from '@/components/RequireAuth'
 import { downloadUrl, getVideo } from '@/lib/api'
 import { formatSpan, toSeconds } from '@/lib/clip-meta'
 import { VideoDetail } from '@/lib/types'
@@ -17,6 +18,14 @@ function layoutNote(layout: VideoDetail['clips'][number]['layout']) {
 
 export default function ClipsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
+  return (
+    <RequireAuth>
+      <Clips id={id} />
+    </RequireAuth>
+  )
+}
+
+function Clips({ id }: { id: string }) {
   const [detail, setDetail] = useState<VideoDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
 

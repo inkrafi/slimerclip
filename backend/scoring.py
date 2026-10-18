@@ -20,8 +20,9 @@ WEIGHTS_WITHOUT_AUDIENCE = {"ai": 0.80, "struktur": 0.20}
 
 SNAP_TOLERANCE = 3.0      # detik: jarak maksimum untuk menempel ke batas kalimat
 MIN_CLIP_SECONDS = 10.0
-SHORT_CLIP_SECONDS = 20.0  # momen lebih pendek dari ini diperpanjang ...
-TARGET_MIN_SECONDS = 25.0  # ... sampai minimal sekitar 25 detik (di batas kalimat)
+MIN_DURATION_SECONDS = 45.0  # aturan produk: setiap klip minimal 45 detik (diperpanjang di batas kalimat)
+SHORT_CLIP_SECONDS = MIN_DURATION_SECONDS
+TARGET_MIN_SECONDS = MIN_DURATION_SECONDS
 MAX_CLIP_SECONDS = 90.0
 
 
@@ -83,7 +84,12 @@ def extend_short(start: float, end: float, lines: list, video_duration: float) -
     new_end = min(new_end, start + MAX_CLIP_SECONDS)
     if video_duration:
         new_end = min(new_end, video_duration)
-    return start, max(end, new_end)
+    new_end = max(end, new_end)
+    # Dekat akhir video → kekurangannya diambil dari depan (mundur ke awal kalimat)
+    if new_end - start < TARGET_MIN_SECONDS:
+        target_start = max(0.0, new_end - TARGET_MIN_SECONDS)
+        start = max((l[0] for l in lines if l[0] <= target_start), default=target_start)
+    return start, new_end
 
 
 def ai_score(segment: dict) -> tuple:
@@ -132,13 +138,13 @@ def audience_score(start: float, end: float, heatmap: list) -> float | None:
 
 
 def duration_fit(seconds: float) -> float:
-    """Durasi ideal Shorts/Reels/TikTok: 25–60 detik."""
-    if 25 <= seconds <= 60:
+    """Durasi ideal klip SlimerClip: 45–70 detik (minimal 45 detik sesuai aturan produk)."""
+    if 45 <= seconds <= 70:
         return 100.0
-    if 15 <= seconds < 25:
-        return 60 + (seconds - 15) * 4          # 60 → 100
-    if 60 < seconds <= 90:
-        return 100 - (seconds - 60) * (40 / 30)  # 100 → 60
+    if 30 <= seconds < 45:
+        return 60 + (seconds - 30) * (40 / 15)   # 60 → 100
+    if 70 < seconds <= 90:
+        return 100 - (seconds - 70) * 2          # 100 → 60
     return 30.0
 
 
@@ -216,18 +222,39 @@ def score_segments(segments: list, transcript_lines: list, heatmap: list, video_
     return drop_overlaps(scored)
 
 
+OVERLAP_TOLERANCE = 3.0   # detik tumpang tindih yang dibiarkan (sambungan kalimat)
+
+
 def drop_overlaps(segments: list) -> list:
-    """Buang momen yang tumpang tindih > 30% dengan momen berskor lebih tinggi (isinya terasa sama)."""
+    """
+    Momen yang tumpang tindih dengan momen berskor lebih tinggi dipangkas ke bagian yang tidak
+    tumpang tindih. Jika sisanya kurang dari TARGET_MIN_SECONDS (isinya praktis sama), momen dibuang.
+    """
     kept = []
     for seg in sorted(segments, key=lambda s: s["viral_score"], reverse=True):
-        s0, s1 = to_seconds(seg["start_time"]), to_seconds(seg["end_time"])
-        duplicate = False
-        for other in kept:
-            o0, o1 = to_seconds(other["start_time"]), to_seconds(other["end_time"])
-            overlap = min(s1, o1) - max(s0, o0)
-            if overlap > 0.3 * min(s1 - s0, o1 - o0):
-                duplicate = True
-                break
-        if not duplicate:
-            kept.append(seg)
+        orig = (to_seconds(seg["start_time"]), to_seconds(seg["end_time"]))
+        s0, s1 = orig
+        changed = True
+        while changed and s1 > s0:
+            changed = False
+            for other in kept:
+                o0, o1 = to_seconds(other["start_time"]), to_seconds(other["end_time"])
+                if min(s1, o1) - max(s0, o0) <= OVERLAP_TOLERANCE:
+                    continue
+                if o0 <= s0:                  # momen lain menutupi bagian awal → mulai setelahnya
+                    s0 = max(s0, o1)
+                elif o1 >= s1:                # menutupi bagian akhir → berhenti sebelumnya
+                    s1 = min(s1, o0)
+                else:                         # momen lain ada di tengah → ambil sisi yang lebih panjang
+                    s0, s1 = (s0, o0) if o0 - s0 >= s1 - o1 else (o1, s1)
+                changed = True
+        trimmed = (s0, s1) != orig
+        if trimmed and s1 - s0 < TARGET_MIN_SECONDS:
+            continue
+        if trimmed:
+            seg = dict(seg, start_time=to_mmss(s0), end_time=to_mmss(s1), duration_seconds=int(s1 - s0))
+            if isinstance(seg.get("score_breakdown"), dict) and isinstance(seg["score_breakdown"].get("struktur"), dict):
+                seg["score_breakdown"] = {**seg["score_breakdown"],
+                                          "struktur": {**seg["score_breakdown"]["struktur"], "durasi_detik": int(s1 - s0)}}
+        kept.append(seg)
     return kept
