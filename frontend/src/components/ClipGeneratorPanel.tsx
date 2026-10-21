@@ -1,15 +1,14 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import Link from 'next/link'
-import { Download, Loader2, Play, X } from 'lucide-react'
+import { Loader2, Pencil, X } from 'lucide-react'
 import { ClipGenerateOptions, ClipProgress, Me, Segment, UploadedFileInfo } from '@/lib/types'
 import { useVideoUpload } from '@/hooks/useVideoUpload'
 import { angleOf } from '@/lib/clip-meta'
-import CaptionStyleEditor from '@/components/CaptionStyleEditor'
-import { downloadUrl, extractVideoId } from '@/lib/api'
-import { loadCaptionStyle, saveCaptionStyle } from '@/lib/caption-presets'
+import { loadCaptionStyle } from '@/lib/caption-presets'
 import { AUTH_ENABLED } from '@/lib/supabase'
 
 interface ClipGeneratorPanelProps {
+  videoId: string
   youtubeUrl: string
   segments: Segment[]
   onGenerate: (selectedSegments: Segment[], options: ClipGenerateOptions) => void
@@ -32,11 +31,12 @@ const STATUS_TEXT: Record<string, string> = {
   tracking: 'Mencari wajah',
   transcribing: 'Membuat caption',
   rendering: 'Merender',
-  done: 'Tersimpan',
+  done: 'Pratinjau siap',
   error: 'Gagal',
 }
 
 export default function ClipGeneratorPanel({
+  videoId,
   youtubeUrl,
   segments,
   onGenerate,
@@ -50,10 +50,10 @@ export default function ClipGeneratorPanel({
   // Unduh langsung dari YouTube hanya untuk admin (mode lokal selalu admin)
   const canUseYoutube = !AUTH_ENABLED || !!me?.is_admin
 
-  // Sisa jatah render hari ini, dikurangi momen yang sedang antre/dirender (null = tanpa batas)
+  // Sisa jatah pratinjau hari ini, dikurangi momen yang sedang antre/dirender (null = tanpa batas)
   const activeCount = Object.values(progressMap).filter(p => p.status !== 'done' && p.status !== 'error').length
-  const renderLeft = me && me.render_daily_limit != null
-    ? Math.max(0, me.render_daily_limit - (me.renders_today ?? 0) - activeCount)
+  const renderLeft = me && me.preview_daily_limit != null
+    ? Math.max(0, me.preview_daily_limit - (me.previews_today ?? 0) - activeCount)
     : null
 
   // Momen yang sudah tersimpan atau sedang dirender tidak dicentang otomatis, agar tidak dirender dua kali;
@@ -65,22 +65,16 @@ export default function ClipGeneratorPanel({
       .slice(0, renderLeft ?? undefined)
   )
 
-  const [options, setOptions] = useState<ClipGenerateOptions>({
+  // Pratinjau memakai pengaturan bawaan; caption, resolusi & tata letak diatur di editor sebelum render final.
+  // Gaya caption awal = gaya terakhir yang dirender di browser ini.
+  const [options] = useState<ClipGenerateOptions>(() => ({
     resolution: '1080',
     caption_enabled: true,
     smart_tracking: true,
     split_screen: true,
     format: 'mp4',
-    // Gaya caption terakhir yang dipakai di browser ini
     caption_style: loadCaptionStyle(),
-  })
-  useEffect(() => { saveCaptionStyle(options.caption_style) }, [options.caption_style])
-
-  // Pratinjau caption memakai kutipan momen terkuat di atas thumbnail video
-  const sampleWords = (segments.find(s => s.speaker_quote)?.speaker_quote || segments[0]?.topic || 'Momen terbaik dari podcast ini')
-    .replace(/["“”]/g, '').split(/\s+/).filter(Boolean).slice(0, 12)
-  const ytId = extractVideoId(youtubeUrl)
-  const previewBackground = ytId ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg` : undefined
+  }))
 
   // File yang pernah diupload untuk video ini otomatis dipakai; tanpa itu, unduh dari YouTube
   const [chosenSourceMode, setVideoSourceMode] = useState<VideoSourceMode>(uploadedFile ? 'local' : 'url')
@@ -125,16 +119,18 @@ export default function ClipGeneratorPanel({
     selectedSegmentIds.length === 0 ? 'Pilih minimal satu momen. Momen yang sudah tersimpan tidak perlu dirender lagi.' :
     videoSourceMode === 'local' && !uploadedFile
       ? (canUseYoutube ? 'Upload file videonya dulu, atau pilih unduh dari YouTube.' : 'Upload file videonya dulu.') :
-    renderLeft === 0 ? 'Jatah render hari ini sudah habis. Coba lagi besok.' :
-    renderLeft !== null && selectedSegmentIds.length > renderLeft ? `Sisa jatah render hari ini ${renderLeft} klip. Kurangi pilihan momen.` :
+    renderLeft === 0 ? 'Jatah pratinjau hari ini sudah habis. Coba lagi besok.' :
+    renderLeft !== null && selectedSegmentIds.length > renderLeft ? `Sisa jatah pratinjau hari ini ${renderLeft} klip. Kurangi pilihan momen.` :
     null
 
 
   return (
     <section aria-labelledby="render-title" className="rounded-lg border border-rule glass">
       <div className="p-5 border-b border-rule">
-        <h2 id="render-title" className="type-heading text-xl text-ink">Render klip</h2>
-        <p className="mt-1 text-sm text-ink-muted">Video 9:16 dengan caption otomatis. Hasilnya tersimpan, tidak perlu render ulang.</p>
+        <h2 id="render-title" className="type-heading text-xl text-ink">Buat klip</h2>
+        <p className="mt-1 text-sm text-ink-muted">
+          Momen dipotong jadi pratinjau 9:16 yang mengikuti pembicara. Caption, hook, efek, dan resolusi diatur di editor, lalu render final untuk mengunduh.
+        </p>
         {clipsHref && (
           <Link href={clipsHref} className="mt-2 inline-block text-sm text-ink underline underline-offset-4 decoration-rule hover:decoration-ink-muted">
             Lihat klip tersimpan
@@ -286,14 +282,11 @@ export default function ClipGeneratorPanel({
                         <div className="h-full bg-signal transition-[width] duration-300" style={{ width: `${progress.progress}%` }} />
                       </div>
                     )}
-                    {progress.status === 'done' && progress.url && (
+                    {progress.status === 'done' && (
                       <div className="mt-2 flex gap-2">
-                        <a href={progress.url} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-quiet">
-                          <Play className="size-3.5" aria-hidden /> Putar
-                        </a>
-                        <a href={downloadUrl(progress.url)} download className="btn btn-sm btn-primary">
-                          <Download className="size-3.5" aria-hidden /> Unduh
-                        </a>
+                        <Link href={`/video/${videoId}/klip/edit?key=${encodeURIComponent(`${seg.start_time}-${seg.end_time}`)}`} className="btn btn-sm btn-primary">
+                          <Pencil className="size-3.5" aria-hidden /> Edit &amp; unduh
+                        </Link>
                       </div>
                     )}
                     {progress.status === 'error' && progress.error_message && (
@@ -307,89 +300,20 @@ export default function ClipGeneratorPanel({
         </ul>
       </div>
 
-      {/* Caption */}
-      <div className="p-5 border-b border-rule space-y-3">
-        <label className="flex items-center justify-between gap-3">
-          <span className="text-sm font-semibold text-ink">Caption otomatis</span>
-          <input
-            type="checkbox"
-            checked={options.caption_enabled}
-            onChange={e => setOptions({ ...options, caption_enabled: e.target.checked })}
-            disabled={isGenerating}
-            className="size-4 accent-signal"
-          />
-        </label>
-        {options.caption_enabled && (
-          <CaptionStyleEditor
-            value={options.caption_style}
-            onChange={caption_style => setOptions(o => ({ ...o, caption_style }))}
-            disabled={isGenerating}
-            sampleWords={sampleWords}
-            backgroundUrl={previewBackground}
-          />
-        )}
-      </div>
-
-      {/* Pengaturan */}
-      <details className="group border-b border-rule">
-        <summary className="flex items-center justify-between px-5 py-4 text-sm font-semibold text-ink cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-          Pengaturan render
-          <span className="text-xs font-normal text-ink-muted group-open:hidden">
-            {options.resolution}p, {options.smart_tracking ? 'ikuti pembicara' : 'potong tengah'}
-          </span>
-        </summary>
-        <div className="px-5 pb-5 space-y-4 text-sm">
-          <label className="flex items-center justify-between gap-3">
-            <span className="text-ink-muted">Resolusi</span>
-            <select
-              className="rounded-md border border-rule bg-bay px-2 h-8 text-ink"
-              value={options.resolution}
-              onChange={e => setOptions({ ...options, resolution: e.target.value as '1080' | '720' })}
-              disabled={isGenerating}
-            >
-              <option value="1080">1080 × 1920</option>
-              <option value="720">720 × 1280</option>
-            </select>
-          </label>
-          <label className="flex items-center justify-between gap-3">
-            <span className="text-ink-muted">Ikuti pembicara</span>
-            <input
-              type="checkbox"
-              checked={options.smart_tracking}
-              onChange={e => setOptions({ ...options, smart_tracking: e.target.checked })}
-              disabled={isGenerating}
-              className="size-4 accent-signal"
-            />
-          </label>
-          {options.smart_tracking && (
-            <label className="flex items-center justify-between gap-3">
-              <span className="text-ink-muted">Layar terbagi saat dua orang bicara</span>
-              <input
-                type="checkbox"
-                checked={options.split_screen}
-                onChange={e => setOptions({ ...options, split_screen: e.target.checked })}
-                disabled={isGenerating}
-                className="size-4 accent-signal"
-              />
-            </label>
-          )}
-        </div>
-      </details>
-
       <div className="p-5">
         <button type="button" onClick={handleGenerate} disabled={!canGenerate()} className="btn btn-primary w-full h-11">
           {isGenerating ? (
             <>
               <Loader2 className="size-4 animate-spin" aria-hidden />
-              Merender…
+              Membuat pratinjau…
             </>
           ) : (
-            `Render ${selectedSegmentIds.length} klip`
+            `Buat pratinjau ${selectedSegmentIds.length} klip`
           )}
         </button>
         {!isGenerating && blockedReason && <p className="mt-2 text-xs text-ink-muted">{blockedReason}</p>}
         {renderLeft !== null && renderLeft > 0 && (
-          <p className="mt-2 text-xs text-ink-muted">Sisa jatah render hari ini: {renderLeft} dari {me?.render_daily_limit} klip.</p>
+          <p className="mt-2 text-xs text-ink-muted">Sisa jatah pratinjau hari ini: {renderLeft} dari {me?.preview_daily_limit} klip.</p>
         )}
       </div>
     </section>

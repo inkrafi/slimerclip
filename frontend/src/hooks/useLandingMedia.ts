@@ -5,7 +5,7 @@ import { RenderedClip, VideoSummary } from '@/lib/types'
 export interface LandingMedia {
   videos: VideoSummary[]
   /** Satu klip hasil render untuk diputar di bingkai HP pada hero */
-  showcase: (RenderedClip & { videoTitle: string; videoId: string }) | null
+  showcase: (Omit<RenderedClip, 'url'> & { url: string; videoTitle: string; videoId: string }) | null
   loaded: boolean
 }
 
@@ -25,8 +25,10 @@ export function useLandingMedia(signedIn: boolean): LandingMedia {
         let showcase: LandingMedia['showcase'] = null
         if (withClips) {
           const clips = await getClips(withClips.video_id).catch(() => [])
-          const pick = clips.find(c => !c.legacy) ?? clips[0]
-          if (pick) showcase = { ...pick, videoTitle: withClips.title, videoId: withClips.video_id }
+          // Utamakan klip final (sudah ada caption); pratinjau sebagai cadangan
+          const pick = clips.find(c => c.url && !c.legacy) ?? clips.find(c => c.url) ?? clips[0]
+          const url = pick?.url ?? pick?.preview_url
+          if (pick && url) showcase = { ...pick, url, videoTitle: withClips.title, videoId: withClips.video_id }
         }
         if (!cancelled) setMedia({ videos, showcase, loaded: true })
       })

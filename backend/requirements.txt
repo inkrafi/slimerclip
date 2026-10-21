@@ -5,6 +5,7 @@ python-dotenv==1.0.0
 youtube-transcript-api==1.2.4
 yt-dlp[default]>=2026.8.19  # [default] menyertakan yt-dlp-ejs untuk tantangan JS YouTube
 faster-whisper>=1.1.0
+av>=11,<19              # av 19 tidak cocok dengan faster-whisper 1.2.x (open() metadata_errors)
 opencv-python-headless>=4.10.0
 numpy>=1.26.0
 pyjwt[crypto]>=2.9      # verifikasi token login Supabase

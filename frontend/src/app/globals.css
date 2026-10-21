@@ -180,6 +180,23 @@
   .field:focus-within {
     @apply border-signal;
   }
+
+  /* Dua slider bertumpuk untuk potong awal & akhir klip: hanya pegangannya yang bisa diklik */
+  .trim-handle {
+    @apply absolute inset-0 w-full appearance-none bg-transparent pointer-events-none;
+  }
+  .trim-handle::-webkit-slider-thumb {
+    @apply appearance-none pointer-events-auto h-10 w-3 rounded-sm bg-ink border-2 border-bay cursor-ew-resize;
+  }
+  .trim-handle::-moz-range-thumb {
+    @apply pointer-events-auto h-10 w-3 rounded-sm bg-ink border-2 border-bay cursor-ew-resize;
+  }
+  .trim-handle:focus-visible::-webkit-slider-thumb {
+    @apply bg-signal;
+  }
+  .trim-handle:focus-visible::-moz-range-thumb {
+    @apply bg-signal;
+  }
 }
 
 /* Playhead saat menunggu analisis */

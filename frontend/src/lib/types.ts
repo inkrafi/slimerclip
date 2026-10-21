@@ -104,7 +104,15 @@ export interface RenderedClip {
   resolution?: string
   caption?: boolean
   layout?: { mode: string; full?: number; zoom?: number; split?: number; shots?: number } | null
-  url: string
+  /** Rentang hasil render (detik video sumber); bisa berbeda dari momen jika diedit */
+  range?: [number, number] | null
+  edit?: EditRecipe | null
+  /** "preview" = pratinjau tanpa caption (edit dulu, belum bisa diunduh); "final" = klip jadi */
+  status?: 'preview' | 'final'
+  /** Klip final (bisa diunduh); null selama masih pratinjau */
+  url: string | null
+  /** Pratinjau bersih untuk editor */
+  preview_url?: string | null
   file_size_mb: number
 }
 
@@ -166,6 +174,81 @@ export interface Me {
   free_analyses_left: number | null
   render_daily_limit: number | null
   renders_today: number | null
+  preview_daily_limit: number | null
+  previews_today: number | null
   upload_max_mb: number | null
   upload_max_minutes: number | null
+}
+
+// ── Editor klip (admin) ──
+export type WatermarkPosition = 'tl' | 'tc' | 'tr' | 'bl' | 'br'
+
+export type VignetteShape = 'bottom' | 'top' | 'both' | 'radial'
+export type MarkKind = 'logo' | 'account' | 'source'
+
+export interface WatermarkMark {
+  enabled: boolean
+  position: WatermarkPosition
+  /** Logo: % lebar video; teks: ukuran huruf ÷ 3,2 */
+  size: number
+  opacity: number
+  asset?: string
+  text?: string
+}
+
+/** Resep edit satu klip (backend/clip_effects.py). Waktu dalam detik video sumber. */
+export interface EditRecipe {
+  start: number
+  end: number
+  vignette: { shape: VignetteShape; strength: number; height: number }
+  marks: Record<MarkKind, WatermarkMark>
+  music: { asset: string; volume: number; ducking: boolean }
+  sfx: { asset: string; at: number; volume: number }[]
+  hook: HookSettings
+}
+
+export type HookStyle = 'light' | 'dark' | 'outline'
+
+/** Teks pembuka di atas video. duration 0 = sepanjang klip; position_y = tepi atas teks (% tinggi). */
+export interface HookSettings {
+  enabled: boolean
+  text: string
+  duration: number
+  style: HookStyle
+  font: CaptionStyle['font']
+  size: number
+  position_y: number
+}
+
+export interface TranscriptWord { start: number; end: number; word: string }
+export interface TranscriptSegment { start: number; end: number; text: string; words: TranscriptWord[] }
+
+export interface EditorAsset {
+  name: string
+  label: string
+  kind: 'image' | 'audio'
+  size_mb: number
+  url: string
+}
+
+export type RenderOptions = Pick<ClipGenerateOptions, 'resolution' | 'caption_enabled' | 'smart_tracking' | 'split_screen' | 'caption_style'>
+
+export interface EditorData {
+  clip: RenderedClip
+  title: string
+  channel: string
+  moment: { start: number; end: number }
+  rendered_range: [number, number]
+  /** true = video di editor adalah pratinjau bersih: caption, hook & efek ditampilkan langsung di atasnya */
+  clean_preview: boolean
+  video_duration: number | null
+  edit: EditRecipe
+  options: RenderOptions
+  transcript: { range: [number, number]; segments: TranscriptSegment[] } | null
+  source_ready: boolean
+  /** Sisa jatah render final hari ini; null = tanpa batas */
+  final_left: number | null
+  hook_suggestions: string[]
+  sfx_library: { name: string; label: string; url: string }[]
+  assets: EditorAsset[]
 }

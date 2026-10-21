@@ -159,7 +159,7 @@ export default function CaptionStyleEditor({ value, onChange, disabled, sampleWo
   )
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+export function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3">
       <span className="text-ink-muted">{label}</span>
@@ -168,7 +168,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-function Range({ label, value, min, max, step = 1, onChange, format }: {
+export function Range({ label, value, min, max, step = 1, onChange, format }: {
   label: string; value: number; min: number; max: number; step?: number
   onChange: (v: number) => void; format?: (v: number) => string
 }) {
@@ -203,7 +203,7 @@ function ColorInput({ label, value, onChange }: { label: string; value: string; 
   )
 }
 
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+export function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className="flex items-center justify-between gap-3">
       <span className="text-ink-muted">{label}</span>

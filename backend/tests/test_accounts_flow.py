@@ -1,3 +1,4 @@
+import io
 import time
 import uuid
 
@@ -242,14 +243,15 @@ def test_render_requires_upload_for_users(env):
     assert c.post("/generate", headers=token("admin@example.com"), json=body).status_code == 202
 
 
-def test_render_daily_quota(env):
+def test_preview_daily_quota(env, monkeypatch):
+    monkeypatch.setattr(A, "PREVIEW_DAILY_LIMIT", 3)
     c, h = env["client"], token()
     ref = upload(c, h, make_video(env["tmp"] / "v.mp4", 10)).json["local_video_path"]
     segs = [{"segment_number": i, "start_time": f"00:0{i}", "end_time": f"00:0{i + 1}"} for i in range(1, 5)]
     res = c.post("/generate", headers=h, json={"local_video_path": ref, "video_id": VIDEO_ID, "segments": segs})
-    assert res.status_code == 429 and res.json["code"] == "render_quota"
+    assert res.status_code == 429 and res.json["code"] == "preview_quota"
     res = c.post("/generate", headers=h, json={"local_video_path": ref, "video_id": VIDEO_ID, "segments": segs[:3]})
-    assert res.status_code == 202
+    assert res.status_code == 202 and res.json["job"]["mode"] == "preview"
     # 3 momen masih antre → jatah hari ini habis
     res = c.post("/generate", headers=h, json={"local_video_path": ref, "video_id": VIDEO_ID, "segments": segs[3:]})
     assert res.status_code == 429
@@ -272,3 +274,89 @@ def test_clip_urls_are_signed_per_owner(env):
     assert c.get(url.split("&t=")[0]).status_code == 404      # tanpa token
     assert c.get(url.replace("klip.mp4", "lain.mp4")).status_code == 404
     assert c.get(f"/videos/{VIDEO_ID}/clips", headers=token("lain@example.com")).json["clips"] == []
+
+
+# ── Editor klip (admin) ──────────────────────────────────────
+
+def _preview_clip(env, email, key_start="00:01", key_end="00:05"):
+    """Klip pratinjau (manifest + file) milik pengguna, seperti hasil /generate."""
+    folder = env["tmp"] / "clips" / f"u_{uuid.uuid5(uuid.NAMESPACE_DNS, email)}" / VIDEO_ID
+    folder.mkdir(parents=True, exist_ok=True)
+    name = f"{VIDEO_ID}_1-5.preview.mp4"
+    make_video(folder / name, 1)
+    A._record_clip(str(folder), {"start_time": key_start, "end_time": key_end, "topic": "T", "segment_number": 1},
+                   str(folder / name), {"resolution": "720", "caption_enabled": True, "range": [1.0, 5.0], "mode": "preview"})
+    return folder
+
+
+def test_editor_for_users_needs_upload_and_quota(env, monkeypatch):
+    c = env["client"]
+    monkeypatch.setattr(A.clip_effects, "ASSETS_ROOT", str(env["tmp"] / "assets"))
+    user = token()
+    assert c.get("/assets", headers=user).status_code == 200
+    _preview_clip(env, "user@example.com")
+
+    clips = c.get(f"/videos/{VIDEO_ID}/clips", headers=user).json["clips"]
+    # Pratinjau belum bisa diunduh: hanya preview_url
+    assert clips[0]["status"] == "preview" and clips[0]["url"] is None and clips[0]["preview_url"]
+
+    data = c.get(f"/videos/{VIDEO_ID}/editor?key=00:01-00:05", headers=user).json
+    assert data["clean_preview"] is True and data["final_left"] == 3 and data["source_ready"] is False
+    assert any(s["name"] == "lib_pop.wav" for s in data["sfx_library"])
+    # Pengguna biasa tidak bisa render final dari YouTube, harus upload
+    res = c.post(f"/videos/{VIDEO_ID}/editor", headers=user, json={"key": "00:01-00:05"})
+    assert res.status_code == 400 and res.json["code"] == "no_source"
+
+    upload(c, user, make_video(env["tmp"] / "v.mp4", 10))
+    res = c.post(f"/videos/{VIDEO_ID}/editor", headers=user, json={"key": "00:01-00:05"})
+    assert res.status_code == 202 and res.json["job"]["mode"] == "final"
+    # Sedang dirender → ditolak; jatah final ikut menghitung yang masih antre
+    assert c.post(f"/videos/{VIDEO_ID}/editor", headers=user, json={"key": "00:01-00:05"}).status_code == 409
+    monkeypatch.setattr(A, "RENDER_DAILY_LIMIT", 1)
+    _preview_clip(env, "user@example.com", "00:06", "00:09")
+    res = c.post(f"/videos/{VIDEO_ID}/editor", headers=user, json={"key": "00:06-00:09"})
+    assert res.status_code == 429 and res.json["code"] == "render_quota"
+
+
+def test_sfx_library_is_public(env):
+    c = env["client"]
+    assert c.get("/sfx/lib_pop.wav").status_code == 200
+    assert c.get("/sfx/manifest.json").status_code == 404  # hanya file pustaka
+
+
+def test_editor_flow(env, monkeypatch):
+    c = env["client"]
+    monkeypatch.setattr(A.clip_effects, "ASSETS_ROOT", str(env["tmp"] / "assets"))
+    admin = token("admin@example.com")
+    assert c.post("/analyze", headers=admin, json={"youtube_url": URL}).status_code == 200
+
+    # Klip hasil render (manifest + file) milik admin
+    folder = env["tmp"] / "clips" / f"u_{uuid.uuid5(uuid.NAMESPACE_DNS, 'admin@example.com')}" / VIDEO_ID
+    folder.mkdir(parents=True)
+    make_video(folder / "clip.mp4", 1)
+    A._record_clip(str(folder), {"start_time": "00:01", "end_time": "00:05", "topic": "T", "segment_number": 1},
+                   str(folder / "clip.mp4"), {"resolution": "720", "caption_enabled": True, "range": [1.0, 5.0]})
+
+    assert c.get(f"/videos/{VIDEO_ID}/editor?key=99:00-99:05", headers=admin).status_code == 404
+    data = c.get(f"/videos/{VIDEO_ID}/editor?key=00:01-00:05", headers=admin).json
+    assert data["edit"]["start"] == 1.0 and data["options"]["resolution"] == "720" and data["transcript"] is None
+
+    # Upload logo: gambar asli diterima, file palsu ditolak
+    ok, png = cv2.imencode(".png", np.full((20, 40, 3), 255, dtype=np.uint8))
+    res = c.post("/assets", headers=admin, content_type="multipart/form-data",
+                 data={"file": (io.BytesIO(png.tobytes()), "logo saya.png")})
+    assert res.status_code == 201 and res.json["asset"]["kind"] == "image"
+    logo = res.json["asset"]["name"]
+    bad = c.post("/assets", headers=admin, content_type="multipart/form-data",
+                 data={"file": (io.BytesIO(b"bukan gambar"), "x.png")})
+    assert bad.status_code == 400
+
+    res = c.post(f"/videos/{VIDEO_ID}/editor", headers=admin, json={
+        "key": "00:01-00:05",
+        "edit": {"start": 0.5, "end": 6, "vignette": {"shape": "bottom", "strength": 40},
+                 "marks": {"logo": {"enabled": True, "asset": logo}}},
+        "options": {"resolution": "720"},
+    })
+    assert res.status_code == 202
+    job = res.json["job"]
+    assert list(job["segments"].values())[0]["key"] == "00:01-00:05"

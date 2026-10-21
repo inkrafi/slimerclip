@@ -118,9 +118,10 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
     for (const seg of analysis?.segments ?? []) {
       const key = clipKey(seg.start_time, seg.end_time)
       const saved = clipsByKey.get(key)
-      if (saved) map[seg.segment_number] = { segment_number: seg.segment_number, status: 'done', progress: 100, url: saved.url }
+      const savedUrl = saved ? (saved.url ?? saved.preview_url ?? undefined) : undefined
+      if (saved) map[seg.segment_number] = { segment_number: seg.segment_number, status: 'done', progress: 100, url: savedUrl }
       const live = progressByKey[key]
-      if (live) map[seg.segment_number] = { ...live, segment_number: seg.segment_number, url: live.url ?? saved?.url }
+      if (live) map[seg.segment_number] = { ...live, segment_number: seg.segment_number, url: live.url ?? savedUrl }
     }
     return map
   }, [analysis?.segments, clipsByKey, progressByKey])
@@ -238,7 +239,8 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
                 isOpen={openMoments.has(seg.segment_number)}
                 onToggle={() => toggleMoment(seg.segment_number)}
                 onPlayClip={(s, e) => setActiveClip({ start: s, end: e })}
-                renderedUrl={clipsByKey.get(clipKey(seg.start_time, seg.end_time))?.url}
+                editHref={clipsByKey.has(clipKey(seg.start_time, seg.end_time))
+                  ? `/video/${videoId}/klip/edit?key=${encodeURIComponent(clipKey(seg.start_time, seg.end_time))}` : undefined}
               />
             ))}
           </div>
@@ -247,6 +249,7 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
         <aside className="lg:sticky lg:top-20">
           <ClipGeneratorPanel
             key={analysis.segments.map(s => s.start_time).join()}
+            videoId={videoId}
             youtubeUrl={youtubeUrl}
             segments={analysis.segments}
             onGenerate={start}

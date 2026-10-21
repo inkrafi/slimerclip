@@ -15,7 +15,7 @@ from youtube_utils import YTDLP_JS_RUNTIMES, extract_video_id, is_youtube_url
 
 load_dotenv()
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "180")) * 1000
 
 _client = None

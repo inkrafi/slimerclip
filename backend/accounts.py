@@ -17,6 +17,8 @@ from auth import AUTH_ENABLED, SUPABASE_URL, User, fernet_key
 
 FREE_ANALYSES = int(os.getenv("FREE_ANALYSES", "3"))
 RENDER_DAILY_LIMIT = int(os.getenv("RENDER_DAILY_LIMIT", "3"))
+# Klip pratinjau (tanpa caption, untuk diedit) dibatasi terpisah dari render final
+PREVIEW_DAILY_LIMIT = int(os.getenv("PREVIEW_DAILY_LIMIT", "10"))
 # Batas harian analisis yang memakai API key milik server (semua pengguna gratis digabung),
 # pengaman jika ada yang membuat banyak akun Google untuk menghabiskan kuota.
 SERVER_KEY_DAILY_CAP = int(os.getenv("SERVER_KEY_DAILY_CAP", "40"))

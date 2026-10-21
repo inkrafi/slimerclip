@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useState } from 'react'
 import { Check, ChevronDown, Copy, Play } from 'lucide-react'
 import { ScoreBreakdown, Segment } from '@/lib/types'
@@ -13,7 +14,8 @@ interface Props {
   onToggle: () => void
   onPlayClip: (start: string, end: string) => void
   /** URL klip hasil render jika momen ini sudah pernah dirender */
-  renderedUrl?: string
+  /** Link ke editor klip, jika momen ini sudah punya pratinjau/klip */
+  editHref?: string
 }
 
 const HOOK_LABELS: Record<string, string> = {
@@ -97,7 +99,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 /** Satu momen hasil analisis: baris ringkas yang bisa dibuka untuk melihat hook & caption. */
-export default function SegmentCard({ segment: seg, isBest, isOpen, onToggle, onPlayClip, renderedUrl }: Props) {
+export default function SegmentCard({ segment: seg, isBest, isOpen, onToggle, onPlayClip, editHref }: Props) {
   const angle = angleOf(seg.content_angle)
   const emotion = emotionOf(seg.emotion_trigger)
   const length = toSeconds(seg.end_time) - toSeconds(seg.start_time)
@@ -130,7 +132,7 @@ export default function SegmentCard({ segment: seg, isBest, isOpen, onToggle, on
           <span className="mt-1 block text-xs text-ink-muted">
             <span style={{ color: angle.color }}>{angle.label}</span>
             {emotion && <>, {emotion}</>}
-            {renderedUrl && <span className="text-sage">, klip tersimpan</span>}
+            {editHref && <span className="text-sage">, klip tersimpan</span>}
           </span>
         </span>
 
@@ -196,10 +198,10 @@ export default function SegmentCard({ segment: seg, isBest, isOpen, onToggle, on
                 <Play className="size-4" aria-hidden />
                 Putar di YouTube
               </button>
-              {renderedUrl && (
-                <a href={renderedUrl} target="_blank" rel="noopener noreferrer" className="btn btn-quiet">
-                  Putar klip hasil render
-                </a>
+              {editHref && (
+                <Link href={editHref} className="btn btn-quiet">
+                  Edit klip
+                </Link>
               )}
             </div>
           </div>

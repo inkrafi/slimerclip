@@ -2,10 +2,10 @@
 
 import { use, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Download, Loader2 } from 'lucide-react'
+import { Download, Loader2, Pencil } from 'lucide-react'
 import RequireAuth from '@/components/RequireAuth'
 import { downloadUrl, getVideo } from '@/lib/api'
-import { formatSpan, toSeconds } from '@/lib/clip-meta'
+import { formatClock, formatSpan, toSeconds } from '@/lib/clip-meta'
 import { VideoDetail } from '@/lib/types'
 
 function layoutNote(layout: VideoDetail['clips'][number]['layout']) {
@@ -50,19 +50,21 @@ function Clips({ id }: { id: string }) {
           <p className="flex items-center gap-2 text-ink-muted"><Loader2 className="size-4 animate-spin" aria-hidden /> Memuat…</p>
         ) : detail.clips.length === 0 ? (
           <div className="rounded-lg border border-dashed border-rule px-6 py-14 text-center">
-            <p className="text-ink">Belum ada klip yang dirender untuk video ini.</p>
+            <p className="text-ink">Belum ada klip untuk video ini.</p>
             <p className="mt-1 text-sm text-ink-muted">
-              Pilih momen lalu render dari <Link href={`/video/${id}`} className="underline underline-offset-4">halaman video</Link>.
+              Pilih momen lalu buat pratinjaunya dari <Link href={`/video/${id}`} className="underline underline-offset-4">halaman video</Link>.
             </p>
           </div>
         ) : (
           <ul className="grid gap-x-6 gap-y-10 grid-cols-[repeat(auto-fill,minmax(15rem,1fr))]">
             {detail.clips.map(clip => {
               const note = layoutNote(clip.layout)
+              const isPreview = clip.status === 'preview'
+              const editHref = `/video/${id}/klip/edit?key=${encodeURIComponent(clip.key)}`
               return (
                 <li key={clip.key}>
                   <video
-                    src={clip.url}
+                    src={(clip.url ?? clip.preview_url) || undefined}
                     controls
                     preload="metadata"
                     playsInline
@@ -72,19 +74,36 @@ function Clips({ id }: { id: string }) {
                     {clip.topic || (clip.legacy ? 'Klip lama' : 'Klip')}
                   </p>
                   <p className="mt-1 flex flex-wrap gap-x-3 text-xs text-ink-muted">
-                    {clip.start_time && clip.end_time && <span className="timecode">{clip.start_time}–{clip.end_time}</span>}
-                    {clip.start_time && clip.end_time
-                      ? <span>{formatSpan(toSeconds(clip.end_time) - toSeconds(clip.start_time))}</span>
-                      : clip.duration_seconds != null && <span>{formatSpan(clip.duration_seconds)}</span>}
+                    {clip.range
+                      ? <span className="timecode">{formatClock(clip.range[0])}–{formatClock(clip.range[1])}</span>
+                      : clip.start_time && clip.end_time && <span className="timecode">{clip.start_time}–{clip.end_time}</span>}
+                    {clip.range
+                      ? <span>{formatSpan(clip.range[1] - clip.range[0])}</span>
+                      : clip.start_time && clip.end_time
+                        ? <span>{formatSpan(toSeconds(clip.end_time) - toSeconds(clip.start_time))}</span>
+                        : clip.duration_seconds != null && <span>{formatSpan(clip.duration_seconds)}</span>}
+                    {isPreview ? <span className="text-label-iris">Pratinjau</span> : clip.edit && <span className="text-teal">Diedit</span>}
                     {clip.resolution && <span>{clip.resolution}p</span>}
                     <span>{clip.file_size_mb} MB</span>
                   </p>
                   {note && <p className="mt-1 text-xs text-ink-muted">{note}</p>}
                   {clip.legacy && <p className="mt-1 text-xs text-ink-muted">Dirender dengan versi lama, sebelum klip dicatat per momen.</p>}
                   <p className="mt-1 text-xs text-ink-faint">Dirender {clip.rendered_at}</p>
-                  <a href={downloadUrl(clip.url)} download className="btn btn-sm btn-primary mt-3">
-                    <Download className="size-3.5" aria-hidden /> Unduh
-                  </a>
+                  {isPreview && (
+                    <p className="mt-1 text-xs text-ink-muted">Belum ada caption. Edit lalu render final untuk mengunduh.</p>
+                  )}
+                  <div className="mt-3 flex gap-2">
+                    {clip.url && (
+                      <a href={downloadUrl(clip.url)} download className="btn btn-sm btn-primary">
+                        <Download className="size-3.5" aria-hidden /> Unduh
+                      </a>
+                    )}
+                    {!clip.legacy && (
+                      <Link href={editHref} className={`btn btn-sm ${isPreview ? 'btn-primary' : 'btn-quiet'}`}>
+                        <Pencil className="size-3.5" aria-hidden /> {isPreview ? 'Edit & render final' : 'Edit'}
+                      </Link>
+                    )}
+                  </div>
                 </li>
               )
             })}

@@ -23,10 +23,11 @@ class JobManager:
         self._jobs: dict[str, dict] = {}
         self._lock = threading.Lock()
 
-    def create(self, owner: str, video_id: str, title: str, segments: list) -> dict:
+    def create(self, owner: str, video_id: str, title: str, segments: list, mode: str = "final") -> dict:
         job = {
             "id": uuid.uuid4().hex[:12],
             "owner": owner,
+            "mode": mode,  # "preview" (render pertama, tanpa caption) atau "final" (dari editor)
             "video_id": video_id,
             "title": title,
             "status": "queued",
@@ -91,13 +92,14 @@ class JobManager:
                     if j["owner"] == owner and (video_id is None or j["video_id"] == video_id)]
             return copy.deepcopy(sorted(jobs, key=lambda j: j["created_at"], reverse=True))
 
-    def active_keys(self, owner: str, video_id: str | None = None) -> set:
-        """Momen (video_id, start-end) milik pengguna yang sedang antre/dirender."""
+    def active_keys(self, owner: str, video_id: str | None = None, mode: str | None = None) -> set:
+        """Momen (video_id, start-end) milik pengguna yang sedang antre/dirender (opsional: satu mode saja)."""
         with self._lock:
             keys = set()
             for job in self._jobs.values():
                 if (job["owner"] != owner or job["status"] not in ACTIVE_STATUSES
-                        or (video_id is not None and job["video_id"] != video_id)):
+                        or (video_id is not None and job["video_id"] != video_id)
+                        or (mode is not None and job.get("mode", "final") != mode)):
                     continue
                 for seg in job["segments"].values():
                     if seg["status"] not in ("done", "error"):

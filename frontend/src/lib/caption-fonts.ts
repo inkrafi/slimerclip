@@ -16,3 +16,16 @@ export const CAPTION_FONT_CSS: Record<CaptionFont, { fontFamily: string; fontWei
   bebas: { fontFamily: bebas.style.fontFamily, fontWeight: 400 },
   bangers: { fontFamily: bangers.style.fontFamily, fontWeight: 400 },
 }
+
+/**
+ * libass mengartikan ukuran font sebagai tinggi baris (usWinAscent + usWinDescent di tabel OS/2),
+ * sedangkan CSS memakai em. Kalikan ukuran ASS dengan faktor ini agar pratinjau sama besar dengan render.
+ */
+export const ASS_EM_SCALE: Record<CaptionFont, number> = {
+  montserrat: 1 / 1.562,
+  poppins: 1 / 1.762,
+  'poppins-semibold': 1 / 1.762,
+  anton: 1 / 1.733,
+  bebas: 1 / 1.3,
+  bangers: 1 / 1.757,
+}

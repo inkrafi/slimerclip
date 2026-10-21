@@ -1,4 +1,7 @@
-import { AnalysisResult, ClipGenerateOptions, Me, RenderJob, RenderedClip, Segment, UploadedFileInfo, VideoDetail, VideoSummary } from '@/lib/types'
+import {
+  AnalysisResult, ClipGenerateOptions, EditRecipe, EditorAsset, EditorData, Me, RenderJob, RenderOptions, RenderedClip, Segment,
+  TranscriptSegment, UploadedFileInfo, VideoDetail, VideoSummary,
+} from '@/lib/types'
 import { accessToken } from '@/lib/supabase'
 
 export const BACKEND_URL = process.env.NEXT_PUBLIC_PYTHON_BACKEND_URL || 'http://127.0.0.1:5000'
@@ -92,6 +95,29 @@ export const isJobActive = (job: RenderJob) => ['queued', 'downloading', 'runnin
 
 /** Event browser agar indikator render di header langsung memeriksa job baru. */
 export const RENDER_STARTED_EVENT = 'slimerclip:render-started'
+
+// ── Editor klip (admin) ──
+export const getEditor = (videoId: string, key: string) =>
+  request<EditorData>(`/videos/${encodeURIComponent(videoId)}/editor?key=${encodeURIComponent(key)}`)
+
+/** Render ulang satu klip dengan resep edit (dan teks caption yang diedit, jika ada). */
+export const renderEdit = (videoId: string, key: string, edit: EditRecipe, options: RenderOptions, transcript: TranscriptSegment[] | null) =>
+  request<{ job: RenderJob }>(`/videos/${encodeURIComponent(videoId)}/editor`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, edit, options, transcript }),
+  }).then(r => r.job)
+
+export const getJob = (jobId: string) => request<{ job: RenderJob }>(`/jobs/${encodeURIComponent(jobId)}`).then(r => r.job)
+
+export const uploadAsset = (file: File) => {
+  const body = new FormData()
+  body.append('file', file)
+  return request<{ asset: EditorAsset }>('/assets', { method: 'POST', body }).then(r => r.asset)
+}
+
+export const deleteAsset = (name: string) =>
+  request<{ message: string }>(`/assets/${encodeURIComponent(name)}`, { method: 'DELETE' })
 
 /** Tautan unduh untuk URL klip (memaksa browser menyimpan file, bukan memutarnya). */
 export const downloadUrl = (url: string) => `${url}${url.includes('?') ? '&' : '?'}download=1`
