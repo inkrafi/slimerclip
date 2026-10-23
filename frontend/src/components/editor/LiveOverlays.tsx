@@ -1,9 +1,12 @@
 'use client'
 
-import { useRef } from 'react'
+import { Fragment, useRef } from 'react'
 import { CaptionPage } from '@/components/CaptionPreview'
 import { ASS_EM_SCALE, CAPTION_FONT_CSS } from '@/lib/caption-fonts'
 import type { CaptionStyle } from '@/lib/caption-presets'
+import {
+  hookBoxPadding, hookFrame, hookLabelMetrics, hookLabelOffset, hookLook, hookTokens, hookTypeStep, hookWordOpacity,
+} from '@/lib/hook-look'
 import type { HookSettings, TranscriptSegment } from '@/lib/types'
 
 /** Nilai dalam satuan video 1080 px → ukuran relatif terhadap lebar pratinjau. */
@@ -11,6 +14,8 @@ const u = (value: number) => `${(value / 10.8).toFixed(3)}cqw`
 
 // Sama dengan backend (caption_service.py)
 const PAGE_GAP_SECONDS = 0.7
+// Sama dengan backend (clip_effects.py)
+const HOOK_MARGIN_X = 90
 
 interface CaptionWord { start: number; end: number; text: string; stop: boolean; segment: number }
 
@@ -130,43 +135,102 @@ export function LiveCaption({ segments, style, time, range, onMove, onPick }: Li
   )
 }
 
-/** Hook di atas video, sama dengan hook_ass di backend (satuan 1080×1920). */
-export function HookOverlay({ hook, visible, onMove, onTap }: {
+/** Hook di atas video, sama dengan hook_ass di backend (satuan 1080×1920). time = detik sejak awal klip. */
+export function HookOverlay({ hook, time, end, onMove, onTap }: {
   hook: HookSettings
-  visible: boolean
+  /** Detik sejak awal klip; Infinity = tampilkan keadaan akhir (saat teks hook sedang diketik) */
+  time: number
+  /** Detik hook menghilang */
+  end: number
   onMove: (positionY: number) => void
   onTap: () => void
 }) {
-  if (!hook.enabled || !hook.text.trim() || !visible) return null
-  const pad = Math.max(12, Math.round(hook.size * 0.28))
-  const boxed = hook.style !== 'outline'
-  const colors = {
-    light: { color: '#141414', background: '#ffffff' },
-    dark: { color: '#ffffff', background: 'rgb(0 0 0 / 0.9)' },
-    outline: { color: '#ffffff', background: 'transparent' },
-  }[hook.style]
-  const bord = Math.max(4, Math.floor(hook.size / 14))
+  if (!hook.enabled || !hook.text.trim() || time < 0 || time >= end) return null
+  const look = hookLook(hook)
+  const pad = hookBoxPadding(hook)
+  const mainPad = look.box ? pad : 0
+  const lines = hookTokens(hook.text, look.upper)
+  const step = hookTypeStep(lines.reduce((n, l) => n + l.length, 0))
+  const settled = !Number.isFinite(time)
+  const frame = settled ? { opacity: 1, scale: 1, dy: 0 } : hookFrame(hook.anim, time, end)
+  const labelFrame = settled ? frame : hookFrame(hook.anim === 'type' ? 'fade' : hook.anim, time, end)
+  const font = { ...CAPTION_FONT_CSS[hook.font] }
+  const lineColor = `rgb(${[1, 3, 5].map(i => parseInt(look.line.slice(i, i + 2), 16)).join(' ')} / ${1 - look.lineAlpha / 255})`
+  const [labelSize, labelPad] = hookLabelMetrics(hook)
+
+  const motion = (f: typeof frame, originY: number): React.CSSProperties => ({
+    opacity: f.opacity,
+    transform: `translateY(${u(f.dy)}) rotate(${-look.rotate}deg) scale(${f.scale})`,
+    transformOrigin: `50% ${u(originY)}`,
+  })
+
+  const textStyle: React.CSSProperties = {
+    ...font,
+    color: look.fill,
+    fontSize: u(hook.size * ASS_EM_SCALE[hook.font]),
+    lineHeight: u(hook.size),
+    letterSpacing: look.spacing ? u(look.spacing) : undefined,
+    ...(look.box
+      ? { background: lineColor, padding: u(pad), boxDecorationBreak: 'clone', WebkitBoxDecorationBreak: 'clone' }
+      : look.blur
+        // Pendar gelap lembut (garis tepi ASS yang di-blur)
+        ? { textShadow: [0.5, 1, 1.6].map(k => `0 0 ${u(look.bord * k)} ${lineColor}`).join(', ') }
+        : {
+          WebkitTextStroke: `${u(look.bord * 2)} ${lineColor}`,
+          paintOrder: 'stroke fill',
+          filter: look.shadow ? `drop-shadow(${u(look.shadow)} ${u(look.shadow)} 0 ${look.back})` : undefined,
+        }),
+  }
 
   return (
-    <DragY y={hook.position_y} min={5} max={80} anchor="top" label="Posisi hook" inset={u(90)} onChange={onMove} onTap={onTap}>
-      <div style={{ paddingTop: boxed ? u(pad) : 0 }}>
-        <span
-          style={{
-            ...CAPTION_FONT_CSS[hook.font],
-            ...colors,
-            fontSize: u(hook.size * ASS_EM_SCALE[hook.font]),
-            lineHeight: u(hook.size),
-            whiteSpace: 'pre-line',
-            padding: boxed ? `${u(pad)} ${u(pad)}` : 0,
-            boxDecorationBreak: 'clone',
-            WebkitBoxDecorationBreak: 'clone',
-            WebkitTextStroke: boxed ? undefined : `${u(bord * 2)} #000`,
-            paintOrder: 'stroke fill',
-            textShadow: boxed ? undefined : `0 ${u(3)} ${u(3)} rgb(0 0 0 / 0.6)`,
-          }}
-        >
-          {hook.text.trim()}
-        </span>
+    <DragY y={hook.position_y} min={5} max={80} anchor="top" label="Posisi hook" inset={u(HOOK_MARGIN_X)} onChange={onMove} onTap={onTap}>
+      <div className="flex flex-col items-center">
+        {hook.label && (
+          <span style={{
+            ...font, ...motion(labelFrame, labelPad),
+            display: 'inline-block', background: look.labelBox, color: look.labelText,
+            fontSize: u(labelSize * ASS_EM_SCALE[hook.font]), lineHeight: u(labelSize), padding: u(labelPad),
+            letterSpacing: u(Math.round(labelSize * 0.08)), textTransform: 'uppercase', whiteSpace: 'nowrap',
+          }}>
+            {hook.label}
+          </span>
+        )}
+        <div style={{
+          ...motion(frame, mainPad),
+          paddingTop: u(mainPad),
+          marginTop: hook.label ? u(hookLabelOffset(hook) - 2 * labelPad - labelSize) : 0,
+        }}>
+          <span style={textStyle}>
+            {(() => {
+              let index = 0
+              return lines.map((words, li) => (
+                <Fragment key={li}>
+                  {li > 0 && <br />}
+                  {words.map((w, wi) => {
+                    const i = index++
+                    return (
+                      <Fragment key={wi}>
+                        {wi > 0 && ' '}
+                        <span style={{
+                          opacity: hook.anim === 'type' && !settled ? hookWordOpacity(i, step, time) : undefined,
+                          ...(w.emph ? {
+                            color: look.emph ?? undefined,
+                            WebkitTextStrokeColor: look.emphLine ?? undefined,
+                            textDecoration: look.emphUnderline ? 'underline' : undefined,
+                            textDecorationThickness: look.emphUnderline ? u(Math.max(3, hook.size * 0.06)) : undefined,
+                            textUnderlineOffset: look.emphUnderline ? u(hook.size * 0.08) : undefined,
+                          } : {}),
+                        }}>
+                          {w.text}
+                        </span>
+                      </Fragment>
+                    )
+                  })}
+                </Fragment>
+              ))
+            })()}
+          </span>
+        </div>
       </div>
     </DragY>
   )

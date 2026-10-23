@@ -46,8 +46,14 @@ MARK_KINDS = ("logo", "account", "source")   # urutan tumpukan: paling dekat tep
 MAX_CLIP_SECONDS = 600
 MIN_CLIP_SECONDS = 3
 MAX_SFX = 30
-HOOK_STYLES = ("light", "dark", "outline")
+# Gaya hook: spotlight/tape/poster (khas SlimerClip) + light/dark/outline (klasik)
+HOOK_STYLES = ("spotlight", "tape", "poster", "light", "dark", "outline")
+HOOK_ANIMS = ("pop", "slide", "type", "fade")
+HOOK_ACCENTS = {"pink": "#FF4D8D", "yellow": "#FFD23F", "lime": "#B6F23A", "cyan": "#38D9F5", "white": "#FFFFFF"}
 HOOK_MAX_CHARS = 120
+HOOK_LABEL_MAX = 24
+TITLE_MAX = 100
+FILENAME_MAX = 80
 
 # Tata letak watermark (satuan 1080×1920)
 MARGIN_X, MARGIN_Y, STACK_GAP = 54, 130, 14
@@ -63,8 +69,8 @@ DEFAULT_EDIT = {
     },
     "music": {"asset": "", "volume": 35, "ducking": True},
     "sfx": [],
-    "hook": {"enabled": False, "text": "", "duration": 4, "style": "light", "font": "montserrat",
-             "size": 80, "position_y": 14},
+    "hook": {"enabled": False, "text": "", "label": "", "duration": 4, "style": "spotlight", "anim": "pop",
+             "accent": "pink", "font": "montserrat", "size": 80, "position_y": 14},
 }
 
 
@@ -181,7 +187,10 @@ def sanitize_edit(raw, default_start: float, default_end: float, video_duration:
         "enabled": bool(hook.get("enabled", False)) and bool(hook_text),
         "text": hook_text,
         "duration": round(_num(hook.get("duration"), d_hook["duration"], 0, 60), 1),  # 0 = sepanjang klip
+        "label": re.sub(r"[{}\\\r\n*]", "", str(hook.get("label") or "")).strip()[:HOOK_LABEL_MAX],
         "style": hook.get("style") if hook.get("style") in HOOK_STYLES else d_hook["style"],
+        "anim": hook.get("anim") if hook.get("anim") in HOOK_ANIMS else d_hook["anim"],
+        "accent": hook.get("accent") if hook.get("accent") in HOOK_ACCENTS else d_hook["accent"],
         "font": hook.get("font") if hook.get("font") in FONTS else d_hook["font"],
         "size": int(_num(hook.get("size"), d_hook["size"], 40, 130)),
         "position_y": int(_num(hook.get("position_y"), d_hook["position_y"], 5, 80)),
@@ -200,6 +209,50 @@ def sanitize_edit(raw, default_start: float, default_end: float, video_duration:
         "sfx": sfx,
         "hook": hook_clean,
     }
+
+
+def clean_title(value) -> str:
+    text = re.sub(r"[\x00-\x1f{}\\]", " ", str(value or ""))
+    return re.sub(r"\s+", " ", text).strip()[:TITLE_MAX]
+
+
+def suggested_title(segment: dict) -> str:
+    """
+    Judul klip: short_title dari analisis; analisis lama → topik yang dipendekkan
+    ("Hesti bercerita soal bisnis bareng suami — dan …" → "Hesti bercerita soal bisnis bareng suami").
+    """
+    title = clean_title(segment.get("short_title"))
+    if title:
+        return title
+    topic = clean_title(segment.get("topic"))
+    topic = re.split(r"\s[—–-]\s|[.;:!?](?:\s|$)|,\s", topic)[0].strip()
+    if len(topic) > 60:
+        topic = topic[:60].rsplit(" ", 1)[0]
+    return topic.rstrip(" ,") or ""
+
+
+def download_filename(title: str, fallback: str) -> str:
+    """Nama file unduhan dari judul: aman di Windows/macOS/Android, huruf non-Latin dipertahankan."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", clean_title(title))
+    name = re.sub(r"\s+", " ", name).strip(" .")[:FILENAME_MAX].strip(" .")
+    return f"{name or fallback}.mp4"
+
+
+TEMPLATE_PARTS = ("vignette", "marks", "music", "hook")
+
+
+def template_style(raw_edit) -> dict:
+    """
+    Bagian "tampilan" resep edit yang disimpan sebagai format edit dan bisa dipakai di klip lain:
+    vignette, watermark, musik, dan gaya hook. Rentang, teks hook, dan efek suara khas tiap video.
+    """
+    raw_edit = raw_edit if isinstance(raw_edit, dict) else {}
+    raw_hook = raw_edit.get("hook") if isinstance(raw_edit.get("hook"), dict) else {}
+    # Teks sementara agar status "tampilkan hook" tidak ikut hilang saat disanitasi
+    edit = sanitize_edit({**raw_edit, "hook": {**raw_hook, "text": "x"}}, 0, 60)
+    style = {part: edit[part] for part in TEMPLATE_PARTS}
+    style["hook"]["text"] = ""
+    return style
 
 
 def sanitize_transcript(raw) -> list | None:
@@ -359,47 +412,177 @@ def logo_graph(mark: dict, item: dict, input_index: int, target_w: int, target_h
 
 
 # ── Hook ─────────────────────────────────────────────────────
+# Satuan 1080×1920. Frontend (LiveOverlays.tsx → HookOverlay) meniru semua angka di bawah, jadi
+# perubahan di sini juga harus dilakukan di sana.
 
 HOOK_MARGIN_X = 90
+HOOK_CX = 540
+EMPHASIS_RE = re.compile(r"\*([^*\n]+)\*")
 
 
 def hook_box_padding(hook: dict) -> int:
-    return max(12, int(hook["size"] * 0.28))
+    return max(12, int(hook["size"] * (0.22 if hook["style"] == "tape" else 0.28)))
+
+
+def hook_label_metrics(hook: dict) -> tuple[int, int]:
+    """(ukuran teks, padding kotak) label kecil di atas hook."""
+    size = max(34, round(hook["size"] * 0.52))
+    return size, max(10, round(size * 0.34))
+
+
+def _luminance(hex_color: str) -> float:
+    r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _darken(hex_color: str, factor: float) -> str:
+    return "#" + "".join(f"{int(int(hex_color[i:i + 2], 16) * factor):02X}" for i in (1, 3, 5))
+
+
+def hook_look(hook: dict) -> dict:
+    """Warna & garis per gaya (hex #RRGGBB). Dipakai hook_ass dan dicerminkan di frontend."""
+    accent = HOOK_ACCENTS[hook["accent"]]
+    size, style = hook["size"], hook["style"]
+    pad = hook_box_padding(hook)
+    look = {"fill": "#FFFFFF", "line": "#000000", "line_alpha": 0, "box": False, "bord": 0, "shadow": 0,
+            "blur": 0, "rotate": 0, "upper": False, "spacing": 0, "back": "#000000", "back_alpha": 0x80, "emph": accent, "emph_line": None, "emph_underline": False,
+            "label_box": accent, "label_text": "#141414"}
+    if style == "spotlight":
+        # Teks putih dengan pendar gelap lembut: terbaca di latar apa pun tanpa kotak
+        look.update(line_alpha=0x28, bord=max(8, round(size * 0.18)), blur=max(6, round(size * 0.18)))
+    elif style == "tape":
+        # Potongan selotip warna aksen, sedikit miring; kata penekanan digarisbawahi
+        look.update(fill="#141414", line=accent, box=True, bord=pad, rotate=2.5, emph=None, emph_underline=True,
+                    label_box="#141414", label_text="#FFFFFF")
+    elif style == "poster":
+        # Stiker: isi warna aksen, garis tebal gelap + bayangan padat; kata penekanan putih
+        look.update(fill=accent, line="#141414", bord=max(5, round(size * 0.1)), shadow=max(5, round(size * 0.09)),
+                    upper=True, spacing=max(1, round(size * 0.03)), back="#141414", back_alpha=0, emph="#FFFFFF")
+    elif style == "light":
+        look.update(fill="#141414", line="#FFFFFF", box=True, bord=pad,
+                    emph=_darken(accent, 0.55) if _luminance(accent) > 0.55 else accent)
+    elif style == "dark":
+        look.update(line_alpha=0x1A, box=True, bord=pad)
+    else:  # outline
+        look.update(bord=max(4, size // 14), shadow=3)
+    return look
+
+
+def _ass_color(hex_color: str, alpha: int = 0) -> str:
+    return f"&H{alpha:02X}{hex_color[5:7]}{hex_color[3:5]}{hex_color[1:3]}"
+
+
+def hook_tokens(text: str, upper: bool = False) -> list:
+    """Baris → kata [(teks, ditekankan?)]. *kata* = ditekankan."""
+    lines = []
+    for line in text.split("\n"):
+        words, pos = [], 0
+        for m in list(EMPHASIS_RE.finditer(line)) + [None]:
+            plain = line[pos:m.start() if m else len(line)].replace("*", "")
+            chunks = plain.split()
+            if chunks and words and not plain[0].isspace():
+                # Tanda baca yang menempel setelah *kata* ("*kalah*?") tetap satu kata
+                words[-1] = (words[-1][0] + chunks.pop(0), words[-1][1])
+            words += [(w, False) for w in chunks]
+            if m:
+                words += [(w, True) for w in m.group(1).split()]
+                pos = m.end()
+        lines.append([(w.upper() if upper else w, e) for w, e in words])
+    return [line for line in lines if line]
+
+
+def hook_type_step(n_words: int) -> int:
+    """Jeda antar kata (ms) untuk animasi ketik: total maksimal ±0,9 detik."""
+    return min(90, 900 // max(1, n_words))
+
+
+def hook_block_top(hook: dict) -> tuple:
+    """(tepi atas teks label atau None, tepi atas teks utama) dalam piksel 1080×1920."""
+    top = int(1920 * hook["position_y"] / 100)
+    main_pad = hook_box_padding(hook) if hook_look(hook)["box"] else 0
+    if not hook.get("label"):
+        return None, top + main_pad
+    size, pad = hook_label_metrics(hook)
+    return top + pad, top + 2 * pad + size + round(hook["size"] * 0.18) + main_pad
+
+
+def _anim_tags(anim: str, y: int) -> str:
+    if anim == "pop":
+        return r"\fad(80,200)\fscx70\fscy70\t(0,160,\fscx108\fscy108)\t(160,280,\fscx100\fscy100)"
+    if anim == "slide":
+        return rf"\fad(120,200)\move({HOOK_CX},{y - 80},{HOOK_CX},{y},0,260)"
+    if anim == "type":
+        return r"\fad(0,200)"
+    return r"\fad(150,200)"
 
 
 def hook_ass(hook: dict, duration: float, font_family: str) -> str | None:
     """
-    Teks hook di atas video (satuan 1080×1920). position_y = tepi atas blok teks (% tinggi).
-    Gaya light/dark: kotak per baris (BorderStyle 3), outline: teks putih bergaris tepi hitam.
+    Teks hook di atas video. position_y = tepi atas blok (label + teks) dalam % tinggi.
+    *kata* diberi warna aksen; label opsional tampil sebagai pil kecil di atasnya.
     Baris dipotong otomatis oleh libass di dalam margin kiri-kanan.
     """
     if not hook.get("enabled") or not hook.get("text"):
         return None
-    pad = hook_box_padding(hook)
-    if hook["style"] == "light":
-        primary, outline, border_style, bord, shadow = "&H00141414", "&H00FFFFFF", 3, pad, 0
-    elif hook["style"] == "dark":
-        primary, outline, border_style, bord, shadow = "&H00FFFFFF", "&H1A000000", 3, pad, 0
-    else:
-        primary, outline, border_style, bord, shadow = "&H00FFFFFF", "&H00000000", 1, max(4, hook["size"] // 14), 3
+    look = hook_look(hook)
     end = duration if hook["duration"] <= 0 else min(duration, hook["duration"])
-    margin_v = int(1920 * hook["position_y"] / 100) + (pad if border_style == 3 else 0)
-    text = hook["text"].replace("\n", "\\N")
-    return f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-WrapStyle: 0
-ScaledBorderAndShadow: yes
+    label_y, main_y = hook_block_top(hook)
+    fill = _ass_color(look["fill"])
+    line = _ass_color(look["line"], look["line_alpha"])
+    lines = hook_tokens(hook["text"], look["upper"])
+    step = hook_type_step(sum(len(words) for words in lines))
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Hook,{font_family},{hook["size"]},{primary},{primary},{outline},&H80000000,0,0,0,0,100,100,0,0,{border_style},{bord},{shadow},8,{HOOK_MARGIN_X},{HOOK_MARGIN_X},{margin_v},1
+    def place(y: int) -> str:
+        tags = rf"\an8\pos({HOOK_CX},{y})"
+        if look["rotate"]:
+            tags += rf"\org({HOOK_CX},{y})\frz{look['rotate']}"
+        return tags
 
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 2,0:00:00.00,{_ass_time(end)},Hook,,0,0,0,,{{\\fad(150,200)}}{text}
-"""
+    parts, index = [], 0
+    for line_words in lines:
+        words = []
+        for word, emph in line_words:
+            tags = ""
+            if emph and look["emph"]:
+                tags += rf"\c{_ass_color(look['emph'])}"
+            if emph and look["emph_line"]:
+                tags += rf"\3c{_ass_color(look['emph_line'])}"
+            if emph and look["emph_underline"]:
+                tags += r"\u1"
+            if hook["anim"] == "type":
+                a = index * step
+                tags += rf"\1a&HFF&\3a&HFF&\4a&HFF&\t({a},{a + 60},\1a&H00&\3a&H{look['line_alpha']:02X}&\4a&H80&)"
+            reset = rf"\c{fill}\3c{line}\u0" if emph else ""
+            words.append((f"{{{tags}}}" if tags else "") + word + (f"{{{reset}}}" if reset else ""))
+            index += 1
+        parts.append(" ".join(words))
+    text = r"\N".join(parts)
+    blur = rf"\blur{look['blur']}" if look["blur"] else ""
+
+    styles = [f"Style: Hook,{font_family},{hook['size']},{fill},{fill},{line},{_ass_color(look['back'], look['back_alpha'])},0,0,0,0,100,100,{look['spacing']},0,"
+              f"{3 if look['box'] else 1},{look['bord']},{look['shadow']},8,{HOOK_MARGIN_X},{HOOK_MARGIN_X},0,1"]
+    events = [f"Dialogue: 2,0:00:00.00,{_ass_time(end)},Hook,,0,0,0,,"
+              f"{{{place(main_y)}{blur}{_anim_tags(hook['anim'], main_y)}}}{text}"]
+    if label_y is not None:
+        size, pad = hook_label_metrics(hook)
+        text_color = _ass_color(look["label_text"])
+        styles.append(f"Style: HookLabel,{font_family},{size},{text_color},{text_color},{_ass_color(look['label_box'])},"
+                      f"&H00000000,0,0,0,0,100,100,{round(size * 0.08)},0,3,{pad},0,8,"
+                      f"{HOOK_MARGIN_X},{HOOK_MARGIN_X},0,1")
+        label_anim = _anim_tags("fade" if hook["anim"] == "type" else hook["anim"], label_y)
+        events.insert(0, f"Dialogue: 3,0:00:00.00,{_ass_time(end)},HookLabel,,0,0,0,,"
+                         f"{{{place(label_y)}{label_anim}}}{hook['label'].upper()}")
+    return "\n".join([
+        "[Script Info]", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920", "WrapStyle: 0",
+        "ScaledBorderAndShadow: yes", "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
+        "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
+        "MarginR, MarginV, Encoding",
+        *styles, "",
+        "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+        *events, "",
+    ])
 
 
 # ── Audio ────────────────────────────────────────────────────

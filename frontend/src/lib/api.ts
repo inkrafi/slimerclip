@@ -1,5 +1,5 @@
 import {
-  AnalysisResult, ClipGenerateOptions, EditRecipe, EditorAsset, EditorData, Me, RenderJob, RenderOptions, RenderedClip, Segment,
+  AnalysisResult, ClipGenerateOptions, EditRecipe, EditTemplate, EditorAsset, EditorData, Me, RenderJob, RenderOptions, RenderedClip, Segment,
   TranscriptSegment, UploadedFileInfo, VideoDetail, VideoSummary,
 } from '@/lib/types'
 import { accessToken } from '@/lib/supabase'
@@ -118,6 +118,25 @@ export const uploadAsset = (file: File) => {
 
 export const deleteAsset = (name: string) =>
   request<{ message: string }>(`/assets/${encodeURIComponent(name)}`, { method: 'DELETE' })
+
+/** Ubah judul klip (nama file unduhan) tanpa render ulang; kosong = kembali ke judul saran. */
+export const saveClipTitle = (videoId: string, key: string, title: string) =>
+  request<{ title: string }>(`/videos/${encodeURIComponent(videoId)}/clip-title`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, title }),
+  }).then(r => r.title)
+
+/** Simpan format edit (nama yang sama ditimpa). */
+export const saveTemplate = (name: string, edit: EditRecipe, options: RenderOptions, sourceAuto: boolean) =>
+  request<{ template: EditTemplate }>('/edit-templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, edit, options, source_auto: sourceAuto }),
+  }).then(r => r.template)
+
+export const deleteTemplate = (id: string) =>
+  request<{ message: string }>(`/edit-templates/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
 /** Tautan unduh untuk URL klip (memaksa browser menyimpan file, bukan memutarnya). */
 export const downloadUrl = (url: string) => `${url}${url.includes('?') ? '&' : '?'}download=1`

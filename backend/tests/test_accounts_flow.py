@@ -75,6 +75,7 @@ def env(tmp_path, monkeypatch):
     fake = FakeAccounts()
     monkeypatch.setattr(A, "accounts", fake)
     monkeypatch.setattr(A, "CLIPS_ROOT", str(tmp_path / "clips"))
+    monkeypatch.setattr(A, "TEMPLATES_ROOT", str(tmp_path / "templates"))
     monkeypatch.setattr(A, "UPLOADS_DIR", str(tmp_path / "uploads"))
     monkeypatch.setattr(A, "ANALYSIS_CACHE_FILE", str(tmp_path / "analysis_cache.json"))
     calls = []
@@ -360,3 +361,62 @@ def test_editor_flow(env, monkeypatch):
     assert res.status_code == 202
     job = res.json["job"]
     assert list(job["segments"].values())[0]["key"] == "00:01-00:05"
+
+
+def test_edit_templates(env):
+    c = env["client"]
+    user = token("tpl@example.com")
+    other = token("other@example.com")
+    assert c.get("/edit-templates", headers=user).json["templates"] == []
+    assert c.post("/edit-templates", headers=user, json={"name": "  "}).status_code == 400
+
+    res = c.post("/edit-templates", headers=user, json={
+        "name": "Gaya channel", "source_auto": True,
+        "edit": {"start": 3, "hook": {"enabled": True, "text": "rahasia", "style": "poster"}, "vignette": {"strength": 30}},
+        "options": {"resolution": "2160", "caption_style": {"preset": "nonexistent"}},
+    })
+    assert res.status_code == 201
+    tpl = res.json["template"]
+    assert tpl["options"]["resolution"] == "2160" and tpl["source_auto"] is True
+    assert tpl["edit"]["hook"]["text"] == "" and tpl["edit"]["hook"]["style"] == "poster" and "start" not in tpl["edit"]
+
+    # Nama sama (beda huruf besar) menimpa, bukan menambah
+    again = c.post("/edit-templates", headers=user, json={"name": "gaya CHANNEL", "edit": {}, "options": {}}).json["template"]
+    assert again["id"] == tpl["id"]
+    assert len(c.get("/edit-templates", headers=user).json["templates"]) == 1
+    # Milik masing-masing pengguna
+    assert c.get("/edit-templates", headers=other).json["templates"] == []
+    assert c.delete(f"/edit-templates/{tpl['id']}", headers=other).status_code == 200
+    assert len(c.get("/edit-templates", headers=user).json["templates"]) == 1
+
+    assert c.delete("/edit-templates/../x", headers=user).status_code in (400, 404)
+    assert c.delete(f"/edit-templates/{tpl['id']}", headers=user).status_code == 200
+    assert c.get("/edit-templates", headers=user).json["templates"] == []
+
+
+def test_clip_title_and_download_name(env):
+    c = env["client"]
+    admin = token("admin@example.com")
+    folder = env["tmp"] / "clips" / f"u_{uuid.uuid5(uuid.NAMESPACE_DNS, 'admin@example.com')}" / VIDEO_ID
+    folder.mkdir(parents=True)
+    make_video(folder / f"{VIDEO_ID}_1-5.mp4", 1)
+    A._record_clip(str(folder), {"start_time": "00:01", "end_time": "00:05", "segment_number": 1,
+                                 "topic": "Hesti bercerita soal bisnis bareng suami — dan konfliknya."},
+                   str(folder / f"{VIDEO_ID}_1-5.mp4"), {"resolution": "1080", "range": [1.0, 5.0]})
+
+    clip = c.get(f"/videos/{VIDEO_ID}/editor?key=00:01-00:05", headers=admin).json["clip"]
+    assert clip["title"] == "Hesti bercerita soal bisnis bareng suami"  # analisis lama: topik dipendekkan
+
+    res = c.post(f"/videos/{VIDEO_ID}/clip-title", headers=admin,
+                 json={"key": "00:01-00:05", "title": "Cerita Hesti: bisnis bareng suami?"})
+    assert res.status_code == 200 and res.json["title"] == "Cerita Hesti: bisnis bareng suami?"
+
+    url = c.get(f"/videos/{VIDEO_ID}/editor?key=00:01-00:05", headers=admin).json["clip"]["url"]
+    path = url.split("://", 1)[1].split("/", 1)[1]
+    disposition = c.get("/" + path + "&download=1").headers["Content-Disposition"]
+    assert "Cerita%20Hesti%20bisnis%20bareng%20suami.mp4" in disposition or "Cerita Hesti bisnis bareng suami.mp4" in disposition
+
+    # Render final dari editor (tanpa short_title) tidak menghapus judul
+    A._record_clip(str(folder), {"start_time": "00:01", "end_time": "00:05", "topic": "x"},
+                   str(folder / f"{VIDEO_ID}_1-5.mp4"), {"resolution": "1080", "range": [1.0, 5.0]})
+    assert c.get(f"/videos/{VIDEO_ID}/editor?key=00:01-00:05", headers=admin).json["clip"]["title"].startswith("Cerita Hesti")

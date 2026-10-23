@@ -62,7 +62,8 @@ export interface AnalysisResult {
 }
 
 export interface ClipGenerateOptions {
-  resolution: '1080' | '720'
+  /** Sisi pendek video 9:16 (2160 = 4K) */
+  resolution: '720' | '1080' | '2160'
   caption_enabled: boolean
   caption_style: CaptionStyle
   smart_tracking: boolean
@@ -91,6 +92,8 @@ export interface UploadedFileInfo {
 /** Klip yang sudah dirender dan tersimpan di backend (clips/<id>/manifest.json). */
 export interface RenderedClip {
   key: string
+  /** Judul klip (nama file unduhan): diedit pengguna atau saran dari analisis */
+  title?: string
   /** null untuk klip lama yang dibuat sebelum ada pencatatan (rentang waktunya tidak diketahui) */
   start_time: string | null
   end_time: string | null
@@ -207,14 +210,22 @@ export interface EditRecipe {
   hook: HookSettings
 }
 
-export type HookStyle = 'light' | 'dark' | 'outline'
+export type HookStyle = 'spotlight' | 'tape' | 'poster' | 'light' | 'dark' | 'outline'
+export type HookAnim = 'pop' | 'slide' | 'type' | 'fade'
+export type HookAccent = 'pink' | 'yellow' | 'lime' | 'cyan' | 'white'
 
-/** Teks pembuka di atas video. duration 0 = sepanjang klip; position_y = tepi atas teks (% tinggi). */
+/**
+ * Teks pembuka di atas video. duration 0 = sepanjang klip; position_y = tepi atas blok (% tinggi).
+ * *kata* di teks diberi warna aksen; label = pil kecil opsional di atas teks (mis. "POV").
+ */
 export interface HookSettings {
   enabled: boolean
   text: string
+  label: string
   duration: number
   style: HookStyle
+  anim: HookAnim
+  accent: HookAccent
   font: CaptionStyle['font']
   size: number
   position_y: number
@@ -251,4 +262,16 @@ export interface EditorData {
   hook_suggestions: string[]
   sfx_library: { name: string; label: string; url: string }[]
   assets: EditorAsset[]
+  templates: EditTemplate[]
+}
+
+/** Format edit tersimpan: tampilan klip (tanpa rentang, teks hook & efek suara) + pengaturan caption & render. */
+export interface EditTemplate {
+  id: string
+  name: string
+  edit: Pick<EditRecipe, 'vignette' | 'marks' | 'music' | 'hook'>
+  options: RenderOptions
+  /** Teks sumber diisi otomatis dengan channel video tempat format dipakai */
+  source_auto: boolean
+  updated_at: number
 }

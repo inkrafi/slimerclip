@@ -77,6 +77,7 @@ OUTPUT FORMAT — KEMBALIKAN JSON INI PERSIS:
       "start_time": "MM:SS",
       "end_time": "MM:SS",
       "topic": "1 kalimat singkat — apa yang terjadi di segmen ini",
+      "short_title": "Judul YouTube Shorts maks 60 karakter: natural seperti judul kreator, sebut nama/topik spesifik (mis. 'Cerita Hesti bisnis bareng suami'), tanpa emoji, hashtag, atau tanda kutip",
       "why_viral": "2-3 kalimat — jelaskan SPESIFIK mengapa segmen ini berpotensi viral berdasarkan isi transkrip (hook, emosi, daya tarik, penutup).",
       "emotion_trigger": "INSPIRASI atau TAWA atau KAGET atau RELATE atau KONTROVERSI",
       "score_breakdown": { "hook": 22, "emosi": 20, "daya_tarik": 14, "penutup": 13 },
@@ -115,6 +116,7 @@ def clip_analysis_schema(count: int) -> dict:
             "start_time": text,
             "end_time": text,
             "topic": text,
+            "short_title": text,
             "why_viral": text,
             "emotion_trigger": text,
             "score_breakdown": {
@@ -129,7 +131,7 @@ def clip_analysis_schema(count: int) -> dict:
             },
             "caption_suggestion": text,
         },
-        "required": ["segment_number", "start_time", "end_time", "topic", "why_viral", "emotion_trigger",
+        "required": ["segment_number", "start_time", "end_time", "topic", "short_title", "why_viral", "emotion_trigger",
                      "score_breakdown", "speaker_quote", "content_angle", "hooks", "caption_suggestion"],
     }
     return {

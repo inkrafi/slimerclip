@@ -6,15 +6,18 @@ import { AlertCircle, Download, Loader2, RotateCcw, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import CaptionStyleEditor, { Range, Row, Toggle } from '@/components/CaptionStyleEditor'
 import AssetPicker from '@/components/editor/AssetPicker'
+import ClipTitleField from '@/components/editor/ClipTitleField'
 import { MarksPreview, VignettePreview } from '@/components/editor/EffectPreview'
 import { HookOverlay, LiveCaption } from '@/components/editor/LiveOverlays'
 import SfxPanel from '@/components/editor/SfxPanel'
+import TemplatePanel from '@/components/editor/TemplatePanel'
 import TranscriptEditor from '@/components/editor/TranscriptEditor'
 import TrimBar from '@/components/editor/TrimBar'
-import { downloadUrl, getEditor, getJob, renderEdit, RENDER_STARTED_EVENT } from '@/lib/api'
+import { deleteTemplate, downloadUrl, getEditor, getJob, renderEdit, RENDER_STARTED_EVENT, saveTemplate } from '@/lib/api'
 import { CAPTION_FONTS, CaptionFont, saveCaptionStyle } from '@/lib/caption-presets'
+import { HOOK_ACCENTS, HOOK_ANIM_OPTIONS, HOOK_STYLE_OPTIONS } from '@/lib/hook-look'
 import type {
-  EditRecipe, EditorData, HookSettings, HookStyle, MarkKind, RenderJob, RenderOptions, TranscriptSegment, VignetteShape, WatermarkMark,
+  EditRecipe, EditTemplate, EditorData, HookAccent, HookSettings, MarkKind, RenderJob, RenderOptions, TranscriptSegment, VignetteShape, WatermarkMark,
   WatermarkPosition,
 } from '@/lib/types'
 
@@ -30,10 +33,12 @@ const POSITIONS: { id: WatermarkPosition; label: string }[] = [
 const VIGNETTE_SHAPES: { id: VignetteShape; label: string }[] = [
   { id: 'bottom', label: 'Bawah' }, { id: 'top', label: 'Atas' }, { id: 'both', label: 'Atas & bawah' }, { id: 'radial', label: 'Lingkaran' },
 ]
-const HOOK_STYLES: { id: HookStyle; label: string }[] = [
-  { id: 'light', label: 'Kotak putih' }, { id: 'dark', label: 'Kotak gelap' }, { id: 'outline', label: 'Garis tepi' },
-]
 const HOOK_DURATIONS = [3, 5, 8, 0]
+const RESOLUTIONS: { id: RenderOptions['resolution']; label: string; hint: string }[] = [
+  { id: '720', label: '720p', hint: '720×1280. File kecil, untuk pratinjau atau kuota data terbatas.' },
+  { id: '1080', label: '1080p', hint: '1080×1920. Standar TikTok, Reels & Shorts.' },
+  { id: '2160', label: '4K', hint: '2160×3840. Shorts memberi bitrate lebih tinggi untuk upload 4K, jadi hasilnya lebih tajam. Render lebih lama & file lebih besar.' },
+]
 const MARKS: { kind: MarkKind; title: string; hint: string }[] = [
   { kind: 'source', title: 'Sumber video', hint: 'Kredit untuk kreator aslinya.' },
   { kind: 'account', title: 'Teks akun', hint: 'Nama akun atau @handle kamu.' },
@@ -59,6 +64,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
   const [job, setJob] = useState<RenderJob | null>(null)
   const [playhead, setPlayhead] = useState<number | null>(null)
   const [hookFocus, setHookFocus] = useState(false)
+  const [appliedTemplate, setAppliedTemplate] = useState<string | null>(null)
   const video = useRef<HTMLVideoElement>(null)
 
   const load = useCallback(() => {
@@ -171,6 +177,48 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
     }
   }
 
+  const sourceDefault = data.channel ? `Sumber: ${data.channel} (YouTube)` : 'Sumber: YouTube'
+
+  // Format edit: tampilan & pengaturan dari format tersimpan; rentang, teks caption & efek suara klip ini tetap
+  const applyTemplate = (t: EditTemplate) => {
+    const has = (name?: string) => !name || data.assets.some(a => a.name === name)
+    const hookText = edit.hook.text || data.hook_suggestions[0] || ''
+    setEdit({
+      ...edit,
+      vignette: t.edit.vignette,
+      marks: {
+        ...t.edit.marks,
+        logo: { ...t.edit.marks.logo, ...(has(t.edit.marks.logo.asset) ? {} : { asset: '', enabled: false }) },
+        source: { ...t.edit.marks.source, ...(t.source_auto ? { text: sourceDefault } : {}) },
+      },
+      music: has(t.edit.music.asset) ? t.edit.music : { ...t.edit.music, asset: '' },
+      hook: { ...t.edit.hook, text: hookText, enabled: t.edit.hook.enabled && !!hookText },
+    })
+    setOptions({ ...options, ...t.options })
+    setAppliedTemplate(t.id)
+    toast.success(`Format "${t.name}" diterapkan. Cek pratinjau lalu render final.`)
+  }
+
+  const storeTemplate = async (name: string) => {
+    try {
+      const saved = await saveTemplate(name, edit, options, edit.marks.source.text === sourceDefault)
+      setData({ ...data, templates: [saved, ...data.templates.filter(t => t.id !== saved.id)] })
+      setAppliedTemplate(saved.id)
+      toast.success(`Format "${saved.name}" disimpan`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Format gagal disimpan.')
+    }
+  }
+
+  const removeTemplate = async (t: EditTemplate) => {
+    try {
+      await deleteTemplate(t.id)
+      setData(d => d && { ...d, templates: d.templates.filter(x => x.id !== t.id) })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Format gagal dihapus.')
+    }
+  }
+
   const reset = () => {
     setEdit(data.edit)
     setOptions(data.options)
@@ -184,12 +232,13 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
   const vignetteChanged = clean || JSON.stringify(edit.vignette) !== JSON.stringify(baked?.vignette ?? null)
   const marksChanged = clean || JSON.stringify(edit.marks) !== JSON.stringify(baked?.marks ?? null)
   const clipTime = playhead === null ? 0 : playhead - edit.start
-  const hookVisible = hookFocus || (clipTime >= 0 && (edit.hook.duration <= 0 || clipTime < edit.hook.duration))
+  // Sebelum diputar atau saat teks hook diketik: tampilkan keadaan akhir (tanpa animasi)
+  const hookSettled = hookFocus || playhead === null
+  const hookEnd = edit.hook.duration <= 0 ? edit.end - edit.start : Math.min(edit.end - edit.start, edit.hook.duration)
   const finalUrl = data.clip.url
   const canDownload = !!finalUrl && !dirty && !rendering
   const outOfQuota = data.final_left === 0
   const logo = data.assets.find(a => a.name === edit.marks.logo.asset)
-  const sourceDefault = data.channel ? `Sumber: ${data.channel} (YouTube)` : 'Sumber: YouTube'
   const music = data.assets.find(a => a.name === edit.music.asset)
   const ytThumb = /^[\w-]{11}$/.test(videoId) ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : undefined
 
@@ -200,6 +249,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
       </Link>
       <h1 className="mt-3 type-display text-3xl sm:text-4xl text-ink">Edit klip</h1>
       <p className="mt-2 max-w-[68ch] text-ink-muted">{data.clip.topic || data.title}</p>
+      <ClipTitleField videoId={videoId} clipKey={clipKey} initial={data.clip.title ?? ''} />
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:items-start">
         {/* Pratinjau */}
@@ -227,7 +277,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
                 onPick={pickSegment}
               />
             )}
-            {clean && <HookOverlay hook={edit.hook} visible={hookVisible} onMove={position_y => setHook({ position_y })} onTap={focusHook} />}
+            {clean && <HookOverlay hook={edit.hook} time={hookSettled ? Infinity : clipTime} end={hookSettled ? Infinity : hookEnd} onMove={position_y => setHook({ position_y })} onTap={focusHook} />}
           </div>
           <p className="text-xs text-ink-faint text-center max-w-[20rem] mx-auto">
             {clean
@@ -238,6 +288,10 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
 
         {/* Pengaturan */}
         <fieldset disabled={rendering} className="min-w-0 divide-y divide-rule border-y border-rule">
+          <Section title="Format edit" hint="Pakai gaya yang pernah kamu simpan: caption, hook, watermark, vignette, musik & resolusi. Teks hook dan efek suara tetap milik klip ini.">
+            <TemplatePanel templates={data.templates ?? []} appliedId={appliedTemplate}
+              onApply={applyTemplate} onSave={storeTemplate} onDelete={removeTemplate} />
+          </Section>
           <Section title="Potong" hint="Geser pegangan untuk memajukan awal atau memperpanjang akhir klip, hingga 30 detik di luar momen.">
             <TrimBar
               start={edit.start}
@@ -279,6 +333,19 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
                   onChange={e => setHook({ text: e.target.value })}
                   className="field-sizing-content min-h-16 w-full resize-none rounded-md border border-rule bg-bay px-3 py-2 text-ink focus:border-signal focus:outline-none"
                 />
+                <p className="-mt-2 text-xs text-ink-muted">Apit kata dengan bintang, mis. <span className="font-mono text-ink">*selalu kalah*</span>, agar diberi warna aksen.</p>
+                <Row label="Label">
+                  <input
+                    value={edit.hook.label}
+                    maxLength={24}
+                    placeholder="POV, FAKTA, PART 2…"
+                    aria-label="Label kecil di atas hook"
+                    onFocus={() => setHookFocus(true)}
+                    onBlur={() => setHookFocus(false)}
+                    onChange={e => setHook({ label: e.target.value })}
+                    className="h-8 w-40 rounded-md border border-rule bg-bay px-2 text-ink focus:border-signal focus:outline-none"
+                  />
+                </Row>
                 {data.hook_suggestions.length > 0 && (
                   <div>
                     <p className="text-xs text-ink-muted">Ide dari analisis momen ini:</p>
@@ -304,12 +371,35 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
                     ))}
                   </div>
                 </Row>
-                <Row label="Gaya">
-                  <div role="radiogroup" aria-label="Gaya hook" className="grid grid-cols-3 rounded-md border border-rule p-0.5 text-xs">
-                    {HOOK_STYLES.map(h => (
+                <div>
+                  <p className="text-ink-muted">Gaya</p>
+                  <div role="radiogroup" aria-label="Gaya hook" className="mt-1.5 grid grid-cols-3 gap-y-0.5 rounded-md border border-rule p-0.5 text-xs">
+                    {HOOK_STYLE_OPTIONS.map(h => (
                       <button key={h.id} type="button" role="radio" aria-checked={edit.hook.style === h.id} onClick={() => setHook({ style: h.id })}
-                        className={`h-7 px-2 rounded-[5px] whitespace-nowrap ${edit.hook.style === h.id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
+                        className={`h-7 px-2 rounded-[5px] whitespace-nowrap ${edit.hook.style === h.id ? 'bg-raised text-ink' : h.classic ? 'text-ink-faint hover:text-ink' : 'text-ink-muted hover:text-ink'}`}>
                         {h.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-xs text-ink-faint">Baris kedua: gaya klasik.</p>
+                </div>
+                <Row label="Aksen">
+                  <div role="radiogroup" aria-label="Warna aksen hook" className="flex gap-1.5">
+                    {(Object.keys(HOOK_ACCENTS) as HookAccent[]).map(a => (
+                      <button key={a} type="button" role="radio" aria-checked={edit.hook.accent === a} aria-label={a}
+                        onClick={() => setHook({ accent: a })}
+                        className={`size-7 rounded-full border-2 ${edit.hook.accent === a ? 'border-ink' : 'border-transparent'}`}
+                        style={{ background: HOOK_ACCENTS[a], boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.25)' }} />
+                    ))}
+                  </div>
+                </Row>
+                <Row label="Animasi">
+                  <div role="radiogroup" aria-label="Animasi hook" className="grid grid-cols-4 rounded-md border border-rule p-0.5 text-xs">
+                    {HOOK_ANIM_OPTIONS.map(a => (
+                      <button key={a.id} type="button" role="radio" aria-checked={edit.hook.anim === a.id}
+                        onClick={() => { setHook({ anim: a.id }); seek(edit.start) }}
+                        className={`h-7 px-2 rounded-[5px] whitespace-nowrap ${edit.hook.anim === a.id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
+                        {a.label}
                       </button>
                     ))}
                   </div>
@@ -477,15 +567,18 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
           <Section title="Render">
             <div className="space-y-3 text-sm">
               <Row label="Resolusi">
-                <div role="radiogroup" aria-label="Resolusi" className="grid grid-cols-2 rounded-md border border-rule p-0.5 text-xs">
-                  {(['1080', '720'] as const).map(r => (
-                    <button key={r} type="button" role="radio" aria-checked={options.resolution === r} onClick={() => setOptions({ ...options, resolution: r })}
-                      className={`h-7 px-3 rounded-[5px] ${options.resolution === r ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
-                      {r}p
+                <div role="radiogroup" aria-label="Resolusi" className="grid grid-cols-3 rounded-md border border-rule p-0.5 text-xs">
+                  {RESOLUTIONS.map(r => (
+                    <button key={r.id} type="button" role="radio" aria-checked={options.resolution === r.id} onClick={() => setOptions({ ...options, resolution: r.id })}
+                      className={`h-7 px-3 rounded-[5px] whitespace-nowrap ${options.resolution === r.id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
+                      {r.label}
                     </button>
                   ))}
                 </div>
               </Row>
+              <p className="text-xs text-ink-muted">
+                {RESOLUTIONS.find(r => r.id === options.resolution)?.hint}
+              </p>
               <Toggle label="Ikuti pembicara" checked={options.smart_tracking} onChange={v => setOptions({ ...options, smart_tracking: v })} />
               {options.smart_tracking && (
                 <Toggle label="Layar terbagi saat dua orang bergantian bicara" checked={options.split_screen} onChange={v => setOptions({ ...options, split_screen: v })} />

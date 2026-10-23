@@ -6,11 +6,27 @@ from concurrent.futures import ThreadPoolExecutor
 from caption_service import get_caption_service
 import clip_effects
 from caption_styles import FONTS, FONTS_DIR
-from speaker_layout import SpeakerLayoutPlanner
+from speaker_layout import SpeakerLayoutPlanner, _probe, sized
 
 CLIPS_DIR = os.path.join(os.path.dirname(__file__), "clips")
 os.makedirs(CLIPS_DIR, exist_ok=True)
 PREVIEW_W = 540  # lebar video pratinjau (9:16 → 540x960)
+# Batas bitrate final (Mbps) per lebar video: cukup longgar agar CRF 18 tidak dipotong di adegan ramai
+MAX_RATE = {720: 8, 1080: 16, 2160: 45}
+
+
+def _video_args(preview: bool, width: int) -> list:
+    """
+    Opsi encode H.264. Pratinjau: cepat & kecil. Final: kualitas tinggi untuk diupload ulang ke
+    TikTok/Shorts (platform meng-encode ulang, jadi sumber yang bersih = hasil yang lebih tajam):
+    High profile, yuv420p, frame rate konstan, warna BT.709 ditandai agar tidak pucat di aplikasi.
+    """
+    if preview:
+        return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p"]
+    rate = MAX_RATE.get(width, 16)
+    return ["-c:v", "libx264", "-preset", "fast" if width > 1080 else "medium", "-crf", "18",
+            "-profile:v", "high", "-pix_fmt", "yuv420p", "-maxrate", f"{rate}M", "-bufsize", f"{rate * 2}M",
+            "-fps_mode", "cfr", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
 
 
 def _ffmpeg_error(e: subprocess.CalledProcessError) -> str:
@@ -75,11 +91,16 @@ class RenderPipeline:
 
     def _layout_for(self, video_path, start_sec, end_sec, target_w, target_h, options, layout_path, callback):
         """
-        Tata letak 9:16 (filter graph [0:v] → [vlayout]). Hasil "ikuti pembicara" disimpan per klip,
-        jadi render final setelah pratinjau (rentang & resolusi sama) tidak perlu melacak wajah lagi.
+        Tata letak 9:16 (filter graph [0:v] → [vlayout] berukuran target). Hasil "ikuti pembicara" disimpan
+        per klip sebagai templat tanpa ukuran, jadi render final setelah pratinjau (rentang sama, resolusi
+        apa pun termasuk 4K) tidak perlu melacak wajah lagi.
         """
+        graph, summary = self._layout_template(video_path, start_sec, end_sec, options, layout_path, callback)
+        return sized(graph, target_w, target_h), summary
+
+    def _layout_template(self, video_path, start_sec, end_sec, options, layout_path, callback):
         tracking, split = options.get('smart_tracking', True), options.get('split_screen', True)
-        key = f"{start_sec:.2f}-{end_sec:.2f}-{target_w}x{target_h}-{int(tracking)}{int(split)}"
+        key = f"v2-{start_sec:.2f}-{end_sec:.2f}-{int(tracking)}{int(split)}"
         try:
             with open(layout_path, encoding="utf-8") as f:
                 cached = json.load(f)
@@ -92,12 +113,12 @@ class RenderPipeline:
             if callback: callback({'status': 'tracking', 'progress': 10})
             try:
                 graph, summary = self.layout_planner.plan(
-                    video_path, start_sec, end_sec, target_w, target_h, allow_split=split, callback=callback)
+                    video_path, start_sec, end_sec, allow_split=split, callback=callback)
             except Exception as e:
                 print(f"Tata letak pembicara gagal: {e}, fallback ke crop tengah.")
-                return self.layout_planner.center_plan(video_path, target_w, target_h)
+                return self.layout_planner.center_plan(video_path)
         else:
-            graph, summary = self.layout_planner.center_plan(video_path, target_w, target_h)
+            graph, summary = self.layout_planner.center_plan(video_path)
         try:
             with open(layout_path, "w", encoding="utf-8") as f:
                 json.dump({"key": key, "graph": graph, "summary": summary}, f)
@@ -219,9 +240,10 @@ class RenderPipeline:
         layout_path = os.path.join(output_dir, f"{base_name}.layout.json")
         assets_dir = options.get('assets_dir') or ''
 
-        target_h = int(options.get('resolution', '1080'))
-        target_w = int(target_h * 9 / 16)
-        target_w -= target_w % 2  # libx264 butuh dimensi genap (720p → 404, bukan 405)
+        # Resolusi = sisi pendek video 9:16 ("1080" → 1080x1920, "2160" → 4K 2160x3840).
+        # Pratinjau selalu 540x960: overlay editor relatif terhadap lebar video, encode jauh lebih cepat.
+        target_w = PREVIEW_W if preview else int(options.get('resolution', '1080'))
+        target_h = _even_int(target_w * 16 / 9)
 
         try:
             # 1+2. Tata letak 9:16 (lacak wajah) dan transkrip (Whisper) dikerjakan bersamaan: keduanya
@@ -257,6 +279,13 @@ class RenderPipeline:
             marks = edit.get('marks') or {}
             extra_inputs = []  # input FFmpeg tambahan (index 1, 2, …)
             graph, label = layout_graph, "vlayout"
+            if not preview:
+                # Sumber 1080p di-crop 9:16 hanya ±600 px lebar; saat di-upscale, sedikit penajaman
+                # (sebelum caption, agar teks tidak ikut ditajamkan) membuat hasil tidak lembek
+                src_h = _probe(video_path)[1]
+                if target_w > src_h * 9 / 16 * 1.3:
+                    graph += f";[{label}]unsharp=5:5:0.6:5:5:0[vsharp]"
+                    label = "vsharp"
 
             vignette = edit.get('vignette') or {"shape": "radial", "strength": 0}
             if clip_effects.write_shade_png(vignette, target_w, target_h, shade_path):
@@ -280,10 +309,6 @@ class RenderPipeline:
                 with open(os.path.join(output_dir, mark_name), "w", encoding="utf-8") as f:
                     f.write(marks_text)
                 steps.append(f"ass={mark_name}:fontsdir={_fonts_dir_for(output_dir)}")
-            if preview:
-                # Pratinjau cukup setengah resolusi (overlay editor relatif terhadap lebar video), encode jauh
-                # lebih cepat; tata letak tetap dihitung di resolusi final agar cache-nya terpakai saat render final
-                steps.append(f"scale={PREVIEW_W}:{_even_int(PREVIEW_W * target_h / target_w)}")
             graph += f";[{label}]{','.join(steps) or 'null'}[vfx]"
 
             logo_item = next((item for item in layout if item["kind"] == "logo"), None)
@@ -324,8 +349,8 @@ class RenderPipeline:
                 "-/filter_complex", os.path.basename(graph_path),
                 "-map", "[vout]", *audio_map,
                 "-t", f"{duration:.3f}",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "27" if preview else "23", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k",
+                *_video_args(preview, target_w),
+                "-c:a", "aac", "-b:a", "128k" if preview else "192k", "-ar", "48000",
                 "-movflags", "+faststart",  # metadata di depan → preview bisa langsung diputar
                 temp_output_path
             ], "Gagal render klip final", cwd=output_dir)

@@ -9,6 +9,9 @@ from youtube_utils import YTDLP_JS_RUNTIMES
 # Base directory for downloads
 DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+# Tinggi maksimum video sumber dari YouTube (1080, 1440, 2160). Lebih tinggi = klip lebih tajam,
+# tapi file unduhan lebih besar dan tracking lebih lambat.
+SOURCE_MAX_HEIGHT = int(os.getenv("SOURCE_MAX_HEIGHT", "1440"))
 
 # Satu lock per video agar dua request untuk video yang sama tidak men-download bersamaan
 _download_locks: dict[str, threading.Lock] = {}
@@ -82,10 +85,12 @@ def _download(youtube_url: str, callback, filename_template: str) -> str:
     output_template = os.path.join(DOWNLOADS_DIR, filename_template)
 
     ydl_opts = {
-        # Utamakan H.264 (avc1): AV1/VP9 jauh lebih berat di-decode CPU saat tracking & render
-        'format': ('bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/'
-                   'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/'
-                   'best[height<=1080][ext=mp4]/best'),
+        # Resolusi tertinggi sampai SOURCE_MAX_HEIGHT: crop 9:16 dari sumber 1080p hanya ±600 px lebar,
+        # dari 1440p ±810 px, jadi klip 1080x1920/4K jauh lebih tajam. Pada resolusi yang sama utamakan
+        # H.264 (AV1/VP9 lebih berat di-decode CPU saat tracking & render).
+        'format': (f'bv*[height<={SOURCE_MAX_HEIGHT}]+ba[ext=m4a]/bv*[height<={SOURCE_MAX_HEIGHT}]+ba/'
+                   f'b[height<={SOURCE_MAX_HEIGHT}]/b'),
+        'format_sort': [f'res:{SOURCE_MAX_HEIGHT}', 'vcodec:h264', 'acodec:m4a'],
         'outtmpl': output_template,
         'merge_output_format': 'mp4',
         'noplaylist': True,

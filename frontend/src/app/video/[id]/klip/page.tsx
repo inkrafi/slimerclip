@@ -71,8 +71,9 @@ function Clips({ id }: { id: string }) {
                     className="w-full aspect-[9/16] rounded-md border border-rule bg-black"
                   />
                   <p className="mt-3 font-semibold text-ink leading-snug line-clamp-2">
-                    {clip.topic || (clip.legacy ? 'Klip lama' : 'Klip')}
+                    {clip.title || clip.topic || (clip.legacy ? 'Klip lama' : 'Klip')}
                   </p>
+                  {clip.title && clip.topic && <p className="mt-0.5 text-xs text-ink-muted line-clamp-2">{clip.topic}</p>}
                   <p className="mt-1 flex flex-wrap gap-x-3 text-xs text-ink-muted">
                     {clip.range
                       ? <span className="timecode">{formatClock(clip.range[0])}–{formatClock(clip.range[1])}</span>
@@ -83,7 +84,7 @@ function Clips({ id }: { id: string }) {
                         ? <span>{formatSpan(toSeconds(clip.end_time) - toSeconds(clip.start_time))}</span>
                         : clip.duration_seconds != null && <span>{formatSpan(clip.duration_seconds)}</span>}
                     {isPreview ? <span className="text-label-iris">Pratinjau</span> : clip.edit && <span className="text-teal">Diedit</span>}
-                    {clip.resolution && <span>{clip.resolution}p</span>}
+                    {clip.resolution && <span>{clip.resolution === '2160' ? '4K' : `${clip.resolution}p`}</span>}
                     <span>{clip.file_size_mb} MB</span>
                   </p>
                   {note && <p className="mt-1 text-xs text-ink-muted">{note}</p>}

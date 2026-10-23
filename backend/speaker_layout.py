@@ -37,6 +37,18 @@ ACTIVITY_WINDOW = 1.2      # detik: perataan aktivitas mulut
 DOMINANCE_RATIO = 1.6      # satu orang dianggap dominan jika aktivitasnya ≥ 1.6x yang lain
 QUIET_LEVEL = 4.0          # di bawah ini dianggap tidak ada yang bicara
 
+# Templat graph memakai penanda ukuran; sized() mengisinya. Lanczos: hasil scale (terutama upscale) lebih tajam.
+SCALE_FULL = "scale=@W@:@H@:flags=lanczos,setsar=1"
+SCALE_TOP = "scale=@W@:@HT@:flags=lanczos,setsar=1"
+SCALE_BOTTOM = "scale=@W@:@HB@:flags=lanczos,setsar=1"
+
+
+def sized(template: str, out_w: int, out_h: int) -> str:
+    """Isi ukuran output (out_w x out_h) ke templat graph dari plan()/center_graph()."""
+    top = _even(out_h / 2)
+    return (template.replace("@W@", str(out_w)).replace("@HT@", str(top))
+            .replace("@HB@", str(out_h - top)).replace("@H@", str(out_h)))
+
 
 def ensure_model() -> str:
     """Unduh model YuNet (±230 KB) saat pertama kali dipakai."""
@@ -287,21 +299,21 @@ class SpeakerLayoutPlanner:
             expr = f"if(lt(t,{t_end:.2f}),{value},{expr})"
         return expr
 
-    def plan(self, video_path, start, end, out_w, out_h, allow_split=True, callback=None) -> tuple:
+    def plan(self, video_path, start, end, allow_split=True, callback=None) -> tuple:
         """
-        Hasil: (filter_graph, ringkasan). filter_graph membaca [0:v] dan menghasilkan [vlayout]
-        berukuran out_w x out_h.
+        Hasil: (templat filter_graph, ringkasan). Templat membaca [0:v] dan menghasilkan [vlayout];
+        ukuran output diisi dengan sized(), jadi hasil lacak wajah bisa dipakai untuk resolusi apa pun.
         """
         src_w, src_h = _probe(video_path)
         duration = max(0.1, end - start)
 
         # Video sudah vertikal/sempit → cukup crop tengah
         if src_w / src_h <= 9 / 16 + 0.01:
-            return self.center_graph(src_w, src_h, out_w, out_h), {"mode": "center"}
+            return self.center_graph(src_w, src_h), {"mode": "center"}
 
         shots, n_samples = self._analyze(video_path, start, duration, src_w, src_h, callback)
         if not shots or n_samples == 0:
-            return self.center_graph(src_w, src_h, out_w, out_h), {"mode": "center"}
+            return self.center_graph(src_w, src_h), {"mode": "center"}
         runs = self._decide(shots, allow_split)
 
         def t_of(idx):
@@ -363,20 +375,19 @@ class SpeakerLayoutPlanner:
         def enable(spans):
             return "+".join(f"gte(t,{a:.2f})*lt(t,{b:.2f})" for a, b in spans)
 
-        half_h = _even(out_h / 2)
         parts = [f"[0:v]split={n_split}" + "".join(f"[s{i}]" for i in range(n_split))]
         parts.append(f"[s0]crop={full_w}:{src_h}:x='{self._piecewise(full_x, center_full)}':y=0,"
-                     f"scale={out_w}:{out_h},setsar=1[bfull]")
+                     f"{SCALE_FULL}[bfull]")
         i = 1
         if zoom_spans:
             parts.append(f"[s{i}]crop={zoom_w}:{zoom_h}:x='{self._piecewise(zoom_x, 0)}':y='{self._piecewise(zoom_y, 0)}',"
-                         f"scale={out_w}:{out_h},setsar=1[bzoom]")
+                         f"{SCALE_FULL}[bzoom]")
             i += 1
         if split_spans:
             parts.append(f"[s{i}]crop={split_w}:{split_h}:x='{self._piecewise(top_x, 0)}':y='{self._piecewise(top_y, 0)}',"
-                         f"scale={out_w}:{half_h},setsar=1[btop]")
+                         f"{SCALE_TOP}[btop]")
             parts.append(f"[s{i + 1}]crop={split_w}:{split_h}:x='{self._piecewise(bot_x, 0)}':y='{self._piecewise(bot_y, 0)}',"
-                         f"scale={out_w}:{out_h - half_h},setsar=1[bbot]")
+                         f"{SCALE_BOTTOM}[bbot]")
             parts.append("[btop][bbot]vstack=2[bsplit]")
 
         current = "bfull"
@@ -393,13 +404,13 @@ class SpeakerLayoutPlanner:
         return ";".join(parts), summary
 
     @staticmethod
-    def center_graph(src_w, src_h, out_w, out_h) -> str:
+    def center_graph(src_w, src_h) -> str:
         """Crop tengah 9:16 terbesar yang muat di frame."""
         crop_w = _even(min(src_w, src_h * 9 / 16))
         crop_h = _even(min(src_h, src_w * 16 / 9))
         return (f"[0:v]crop={crop_w}:{crop_h}:{(src_w - crop_w) // 2}:{(src_h - crop_h) // 2},"
-                f"scale={out_w}:{out_h},setsar=1[vlayout]")
+                f"{SCALE_FULL}[vlayout]")
 
-    def center_plan(self, video_path, out_w, out_h) -> tuple:
+    def center_plan(self, video_path) -> tuple:
         src_w, src_h = _probe(video_path)
-        return self.center_graph(src_w, src_h, out_w, out_h), {"mode": "center"}
+        return self.center_graph(src_w, src_h), {"mode": "center"}

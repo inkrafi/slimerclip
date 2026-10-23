@@ -57,6 +57,11 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v', '.flv'}
 CLIPS_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clips")
+# Format edit tersimpan per pengguna (templates/<pengguna>/templates.json)
+TEMPLATES_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+MAX_TEMPLATES = 20
+TEMPLATE_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+_templates_lock = threading.Lock()
 
 # Batas untuk pengguna biasa (admin tanpa batas)
 USER_UPLOAD_MAX_MB = int(os.getenv("USER_UPLOAD_MAX_MB", "500"))
@@ -81,7 +86,7 @@ ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 PUBLIC_ENDPOINTS = {"health_check", "serve_clip", "serve_asset", "serve_sfx", "static"}
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-ALLOWED_RESOLUTIONS = {"720", "1080"}
+ALLOWED_RESOLUTIONS = {"720", "1080", "2160"}  # sisi pendek video 9:16; 2160 = 4K
 TIME_RE = re.compile(r"^\d{1,3}:\d{2}(:\d{2})?(\.\d+)?$")
 GEMINI_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{20,200}$")
 
@@ -241,6 +246,9 @@ def _record_clip(folder: str, segment: dict, output_path: str, options: dict):
             "start_time": segment.get("start_time"),
             "end_time": segment.get("end_time"),
             "topic": segment.get("topic", ""),
+            # Judul saran: dari analisis (short_title); render dari editor tidak membawanya, jadi yang lama dipakai
+            "short_title": (clip_effects.clean_title(segment.get("short_title")) or entry.get("short_title")
+                            or clip_effects.suggested_title(segment)),
             "segment_number": segment.get("segment_number"),
             "viral_score": segment.get("viral_score"),
             "layout": options.get("layout_summary"),
@@ -313,6 +321,7 @@ def _list_clips(user: User, video_id: str, base: str) -> list:
         shown = final or preview
         clips.append({
             **entry,
+            "title": _clip_title(video_id, entry),
             "legacy": False,
             # Klip final bisa diunduh; pratinjau (tanpa caption) hanya untuk diedit
             "status": "final" if final else "preview",
@@ -1092,6 +1101,69 @@ def _media_has_stream(path: str, kind: str) -> bool:
         return False
 
 
+def _templates_path(user: User) -> str:
+    return os.path.join(_owner_root(TEMPLATES_ROOT, user), "templates.json")
+
+
+def _load_templates(user: User) -> list:
+    try:
+        with open(_templates_path(user), encoding="utf-8") as f:
+            items = json.load(f)
+        return items if isinstance(items, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _save_templates(user: User, items: list):
+    path = _templates_path(user)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+@app.route("/edit-templates", methods=["GET"])
+def templates_list():
+    return jsonify({"templates": _load_templates(_user())})
+
+
+@app.route("/edit-templates", methods=["POST"])
+def templates_save():
+    """Simpan format edit (tampilan klip + pengaturan caption & render). Nama yang sama = ditimpa."""
+    user = _user()
+    body = request.get_json(silent=True) or {}
+    name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()[:40]
+    if not name:
+        raise ApiError(400, "Beri nama format edit ini.")
+    with _templates_lock:
+        items = _load_templates(user)
+        existing = next((t for t in items if str(t.get("name", "")).lower() == name.lower()), None)
+        if not existing and len(items) >= MAX_TEMPLATES:
+            raise ApiError(400, f"Maksimal {MAX_TEMPLATES} format edit. Hapus yang tidak dipakai dulu.")
+        template = {
+            "id": existing["id"] if existing else uuid.uuid4().hex[:12],
+            "name": name,
+            "edit": clip_effects.template_style(body.get("edit")),
+            "options": _sanitize_options(body.get("options")),
+            # Teks sumber mengikuti channel video tempat format dipakai
+            "source_auto": bool(body.get("source_auto")),
+            "updated_at": int(time.time()),
+        }
+        _save_templates(user, [template] + [t for t in items if t is not existing])
+    return jsonify({"template": template}), 201
+
+
+@app.route("/edit-templates/<template_id>", methods=["DELETE"])
+def templates_delete(template_id):
+    user = _user()
+    if not TEMPLATE_ID_RE.match(template_id):
+        raise ApiError(400, "Format edit tidak valid.")
+    with _templates_lock:
+        _save_templates(user, [t for t in _load_templates(user) if t.get("id") != template_id])
+    return jsonify({"message": "Format edit dihapus."})
+
+
 @app.route("/assets", methods=["GET"])
 def assets_list():
     user = _user()
@@ -1189,12 +1261,21 @@ def _editor_source(user: User, video_id: str) -> tuple[str | None, str]:
     return None, _cached_youtube_url(video_id)
 
 
+def _analysis_segment(video_id: str, entry: dict) -> dict:
+    analysis = _get_cached_analysis(video_id) or {}
+    return next((s for s in analysis.get("segments") or []
+                 if s.get("start_time") == entry.get("start_time") and s.get("end_time") == entry.get("end_time")), None) or {}
+
+
+def _clip_title(video_id: str, entry: dict) -> str:
+    """Judul klip (juga nama file unduhan): judul yang diedit → saran analisis (short_title / topik dipendekkan)."""
+    return (entry.get("title") or entry.get("short_title")
+            or clip_effects.suggested_title({**entry, **_analysis_segment(video_id, entry)}))
+
+
 def _hook_suggestions(video_id: str, entry: dict) -> list:
     """Ide teks hook dari hasil analisis momen ini (pertanyaan, pernyataan, teaser)."""
-    analysis = _get_cached_analysis(video_id) or {}
-    seg = next((s for s in analysis.get("segments") or []
-                if s.get("start_time") == entry.get("start_time") and s.get("end_time") == entry.get("end_time")), None)
-    hooks = (seg or {}).get("hooks") or {}
+    hooks = _analysis_segment(video_id, entry).get("hooks") or {}
     ideas = [hooks.get(k) for k in ("hook_pertanyaan", "hook_pernyataan", "hook_teaser")]
     return [i.strip() for i in ideas if isinstance(i, str) and i.strip()][:3]
 
@@ -1233,6 +1314,7 @@ def editor_get(video_id):
     return jsonify({
         "clip": {
             **entry,
+            "title": _clip_title(video_id, entry),
             "edit": baked,
             "status": "final" if final else "preview",
             "url": _clip_url(base, user, video_id, entry["filename"], int(os.path.getmtime(final))) if final else None,
@@ -1253,6 +1335,7 @@ def editor_get(video_id):
         "hook_suggestions": _hook_suggestions(video_id, entry),
         "sfx_library": [{"name": n, "label": label, "url": f"{base}sfx/{n}"} for n, label in clip_effects.SFX_LIBRARY.items()],
         "assets": _list_assets(user, base),
+        "templates": _load_templates(user),
     })
 
 
@@ -1307,6 +1390,24 @@ def editor_render(video_id):
     return jsonify({"job": job}), 202
 
 
+@app.route("/videos/<video_id>/clip-title", methods=["POST"])
+def clip_title_save(video_id):
+    """Ubah judul klip (nama file unduhan) tanpa render ulang. Kosong = kembali ke judul saran."""
+    user = _user()
+    body = request.get_json(silent=True) or {}
+    folder, entry = _editor_clip(user, video_id, body.get("key"))
+    title = clip_effects.clean_title(body.get("title"))
+    with _manifest_lock:
+        manifest = _load_manifest(folder)
+        entry = manifest["clips"][body["key"]]
+        entry["title"] = title
+        path = _manifest_path(folder)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        os.replace(path + ".tmp", path)
+    return jsonify({"title": _clip_title(video_id, entry)})
+
+
 @app.route("/clips/<video_id>/<filename>", methods=["GET"])
 def serve_clip(video_id, filename):
     if not _is_safe_id(video_id):
@@ -1322,8 +1423,15 @@ def serve_clip(video_id, filename):
             return jsonify({"error": "File not found"}), 404
         folder = os.path.join(CLIPS_ROOT, owner, video_id) if owner else folder
     # send_from_directory menolak nama file yang keluar dari folder (mis. "../.env")
-    # ?download=1 → paksa simpan file (atribut `download` diabaikan browser untuk URL beda origin)
-    return send_from_directory(folder, filename, as_attachment=request.args.get("download") == "1")
+    # ?download=1 → paksa simpan file (atribut `download` diabaikan browser untuk URL beda origin),
+    # dengan nama file dari judul klip (bukan "<id>_<awal>-<akhir>.mp4")
+    if request.args.get("download") == "1":
+        entry = next((e for e in _load_manifest(folder)["clips"].values()
+                      if filename in (e.get("filename"), e.get("preview_filename"))), None)
+        title = _clip_title(video_id, entry) if entry else ""
+        return send_from_directory(folder, filename, as_attachment=True,
+                                   download_name=clip_effects.download_filename(title, filename.removesuffix(".mp4")))
+    return send_from_directory(folder, filename)
 
 # ══════════════════════════════════════════════════════════════
 # Startup

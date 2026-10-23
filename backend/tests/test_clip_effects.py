@@ -84,7 +84,39 @@ def test_hook_sanitized_and_rendered():
                                    "style": "x", "font": "comic-sans"}}, 0, 30)
     hook = edit["hook"]
     assert hook["text"] == "Baris satu\nbaris dua\nbaris tiga" and hook["duration"] == 60
-    assert hook["style"] == "light" and hook["font"] == "montserrat"
+    assert hook["style"] == "spotlight" and hook["font"] == "montserrat" and hook["anim"] == "pop"
     ass = clip_effects.hook_ass(hook, 30, "Montserrat Black")
     assert r"Baris satu\Nbaris dua\Nbaris tiga" in ass and ",0:00:30.00,Hook," in ass  # durasi dipotong ke panjang klip
     assert clip_effects.hook_ass({**hook, "enabled": False}, 30, "Montserrat Black") is None
+
+
+def test_hook_emphasis_label_and_styles():
+    hook = sanitize_edit({"hook": {"enabled": True, "text": "Kenapa *selalu kalah*?", "label": "pov {x}\n*",
+                                   "style": "poster", "anim": "type", "accent": "lime"}}, 0, 30)["hook"]
+    assert hook["label"] == "pov x" and hook["accent"] == "lime"
+    assert clip_effects.hook_tokens(hook["text"], True) == [[("KENAPA", False), ("SELALU", True), ("KALAH?", True)]]
+    ass = clip_effects.hook_ass(hook, 30, "Montserrat Black")
+    # Label sebagai pil terpisah di atas teks; kata penekanan diberi warna putih (gaya poster)
+    assert ",HookLabel,,0,0,0,," in ass and "POV X" in ass
+    assert r"\c&H00FFFFFF" in ass and "SELALU" in ass and r"\t(0,60," in ass
+    label_y, main_y = clip_effects.hook_block_top(hook)
+    assert label_y < main_y
+    for style in clip_effects.HOOK_STYLES:
+        assert clip_effects.hook_ass({**hook, "style": style}, 30, "Montserrat Black")
+
+
+def test_template_style_keeps_look_only():
+    style = clip_effects.template_style({
+        "start": 10, "end": 50, "sfx": [{"asset": "lib_pop.wav", "at": 12, "volume": 80}],
+        "vignette": {"shape": "top", "strength": 55},
+        "hook": {"enabled": True, "text": "teks khas klip", "style": "tape", "label": "POV"},
+    })
+    assert set(style) == {"vignette", "marks", "music", "hook"}
+    assert style["vignette"]["shape"] == "top" and style["vignette"]["strength"] == 55
+    assert style["hook"]["enabled"] is True and style["hook"]["text"] == "" and style["hook"]["style"] == "tape"
+
+
+def test_layout_template_sizes():
+    from speaker_layout import SpeakerLayoutPlanner, sized
+    graph = sized(SpeakerLayoutPlanner.center_graph(1920, 1080), 2160, 3840)
+    assert "scale=2160:3840:flags=lanczos" in graph and "@" not in graph
