@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '@/components/AuthProvider'
+import { studioHref } from '@/lib/longform'
 import { getJobs, isJobActive, RENDER_STARTED_EVENT } from '@/lib/api'
 import { RenderJob } from '@/lib/types'
 
@@ -34,6 +35,12 @@ export default function RenderIndicator() {
       const segs = Object.values(now.segments)
       const ok = segs.filter(s => s.status === 'done').length
       const title = before.title || 'video'
+      if (now.mode === 'longform') {
+        const openLong = () => router.push(studioHref(now.video_id))
+        if (ok) toast.success(`Video panjang selesai dirender: ${title}`, { action: { label: 'Lihat', onClick: openLong } })
+        else toast.error(`Video panjang gagal dirender: ${title}`, { action: { label: 'Lihat', onClick: openLong } })
+        continue
+      }
       const open = () => router.push(`/video/${now.video_id}/klip`)
       if (ok === segs.length) toast.success(`${ok} klip selesai dirender: ${title}`, { action: { label: 'Lihat klip', onClick: open } })
       else toast.warning(`${ok} dari ${segs.length} klip berhasil dirender: ${title}`, { action: { label: 'Lihat klip', onClick: open } })
@@ -73,13 +80,15 @@ export default function RenderIndicator() {
 
   return (
     <Link
-      href={`/video/${first.video_id}`}
+      href={first.mode === 'longform' ? studioHref(first.video_id) : `/video/${first.video_id}`}
       className="flex items-center gap-2 rounded-full border border-rule bg-raised px-3 h-8 text-xs text-ink hover:border-signal"
       title={first.title ? `Merender klip: ${first.title}` : 'Merender klip'}
     >
       <Loader2 className="size-3.5 animate-spin text-signal" aria-hidden />
       <span>
-        Merender <span className="timecode">{done}/{segments.length}</span> klip
+        {first.mode === 'longform' && active.length === 1
+          ? 'Merender video panjang'
+          : <>Merender <span className="timecode">{done}/{segments.length}</span> klip</>}
       </span>
     </Link>
   )

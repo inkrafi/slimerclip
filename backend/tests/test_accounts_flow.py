@@ -524,3 +524,206 @@ def test_niche_setting(env):
     res = c.put("/me/niche", headers=h, json={"topics": ["investasi", "bisnis", "komedi", "../x"], "comedy": False})
     assert res.status_code == 200 and res.json["niche"] == {"topics": ["bisnis", "investasi"], "comedy": False}
     assert c.get("/me", headers=h).json["niche"]["topics"] == ["bisnis", "investasi"]
+
+
+def _wav(path, seconds=1.0, rate=24000):
+    import math
+    import struct
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(i / rate * 2 * math.pi * 440)))
+                               for i in range(int(seconds * rate))))
+    return path
+
+
+def test_longform_flow(env, monkeypatch):
+    import longform
+    c, h = env["client"], token("admin@example.com")
+    assert c.post("/analyze", headers=h, json={"youtube_url": URL}).status_code == 200
+    info = c.get(f"/videos/{VIDEO_ID}/longform", headers=h).json
+    assert info["project"] is None and len(info["voices"]) == 30
+    # Khusus admin: pengguna biasa ditolak walau videonya ada di pustakanya
+    user = token("lf@example.com")
+    assert c.post("/analyze", headers=user, json={"youtube_url": URL}).status_code == 200
+    assert c.get(f"/videos/{VIDEO_ID}/longform", headers=user).status_code == 403
+    assert c.get("/longform/stock?q=city", headers=user).status_code == 403
+
+    lines = [(0, 5, "kalimat satu"), (5, 10, "kalimat dua")]
+    monkeypatch.setattr(A.transcript_service, "_load_cached", lambda vid: lines)
+    monkeypatch.setattr(longform, "generate_script", lambda tl, meta, minutes, focus, key, channel="": longform.script_from_ai({
+        "title": "Judul Panjang", "summary": "Ringkas.", "scenes": [
+            {"kind": "narration", "chapter": "", "text": "Hook pembuka.", "query": "money"},
+            {"kind": "narration", "chapter": "Bab satu", "text": "Isi bab satu.", "query": "city"},
+            {"kind": "quote", "chapter": "", "text": "kalimat dua", "start_time": "00:02", "end_time": "00:09"},
+        ]}, tl))
+    res = c.post(f"/videos/{VIDEO_ID}/longform/script", headers=h, json={"minutes": 5, "focus": "investasi"})
+    assert res.status_code == 200, res.json
+    scenes = res.json["project"]["scenes"]
+    assert [s["kind"] for s in scenes] == ["narration", "narration", "quote"]
+    assert [s["audio_state"] for s in scenes[:2]] == ["missing", "missing"]
+    sid = scenes[0]["id"]
+
+    keys = []
+    monkeypatch.setattr(longform, "synthesize", lambda text, voice, out, key: keys.append(key) or longform.wav_duration(_wav(out)))
+    res = c.post(f"/videos/{VIDEO_ID}/longform/scenes/{sid}/tts", headers=h)
+    assert res.status_code == 200 and keys == [None]                     # key server
+    scene = res.json["project"]["scenes"][0]
+    assert scene["audio_state"] == "ready" and scene["audio"]["source"] == "tts"
+    assert c.get(scene["audio"]["url"].split("localhost", 1)[1]).status_code == 200
+    assert c.get(scene["audio"]["url"].split("localhost", 1)[1].split("&t=")[0]).status_code == 404   # tanpa token
+
+    # Rekaman sendiri untuk adegan kedua (dikonversi FFmpeg)
+    rec = _wav(env["tmp"] / "rekaman.wav", 1.5, 48000)
+    with open(rec, "rb") as f:
+        res = c.post(f"/videos/{VIDEO_ID}/longform/scenes/{scenes[1]['id']}/recording", headers=h,
+                     data={"audio": (f, "rekaman.wav")}, content_type="multipart/form-data")
+    assert res.status_code == 200, res.json
+    assert res.json["project"]["scenes"][1]["audio"]["source"] == "record"
+
+    # Teks diubah setelah TTS → suara harus dibuat ulang sebelum render
+    edited = res.json["project"]["scenes"]
+    edited[0]["text"] = "Hook pembuka yang baru."
+    res = c.put(f"/videos/{VIDEO_ID}/longform", headers=h, json={"title": "Judul Baru", "scenes": edited, "voice": {"voice": "Kore"}})
+    assert res.status_code == 200 and res.json["project"]["scenes"][0]["audio_state"] == "stale"
+    res = c.post(f"/videos/{VIDEO_ID}/longform/render", headers=h)
+    assert res.status_code == 400 and res.json["code"] == "audio_missing"
+    c.post(f"/videos/{VIDEO_ID}/longform/scenes/{sid}/tts", headers=h)
+
+    # Kutipan butuh file video podcast (admin tanpa file & tanpa link unduhan)
+    monkeypatch.setattr(A, "_editor_source", lambda user, vid: (None, ""))
+    res = c.post(f"/videos/{VIDEO_ID}/longform/render", headers=h)
+    assert res.status_code == 400 and res.json["code"] == "no_source"
+    project = c.get(f"/videos/{VIDEO_ID}/longform", headers=h).json["project"]
+    c.put(f"/videos/{VIDEO_ID}/longform", headers=h, json={**project, "scenes": project["scenes"][:2]})
+
+    def fake_render(project, folder, source, transcript, label, out_name, cb):
+        make_video(os.path.join(folder, out_name), 1)
+        return {"filename": out_name, "durations": [3.0, 12.0]}
+
+    monkeypatch.setattr(longform, "render", fake_render)
+    res = c.post(f"/videos/{VIDEO_ID}/longform/render", headers=h)
+    assert res.status_code == 202
+    for _ in range(50):
+        if c.get(f"/jobs/{res.json['job']['id']}", headers=h).json["job"]["status"] == "done":
+            break
+        time.sleep(0.1)
+    output = c.get(f"/videos/{VIDEO_ID}/longform", headers=h).json["project"]["output"]
+    assert output["chapters"] == [{"at": 0.0, "title": "Pembuka"}, {"at": 3.0, "title": "Bab satu"}]
+    assert output["description"].startswith("Ringkas.")
+    download = c.get(output["url"].split("localhost", 1)[1] + "&download=1")
+    assert download.status_code == 200 and "Judul Baru.mp4" in download.headers["Content-Disposition"]
+    assert download.headers["Content-Type"].startswith("video/")
+
+
+def test_longform_topic_flow(env, monkeypatch):
+    import longform
+    import topics
+    c, h = env["client"], token("admin@example.com")
+    news = [{"title": "IHSG melemah", "url": "https://media.id/ihsg", "source": "Media", "date": "2026-10-27"}]
+    monkeypatch.setattr(topics, "search_news", lambda q, limit=8: news)
+    seen = []
+
+    def fake_script(title, angle, sources, minutes, key, channel=""):
+        seen.append((title, angle, sources, minutes, channel))
+        project = longform.script_from_ai({"title": f"Video {title}", "summary": "Ringkas.", "scenes": [
+            {"kind": "narration", "chapter": "", "text": "Hook.", "query": "stock"},
+            {"kind": "narration", "chapter": "Bab A", "text": "Isi.", "query": "city"},
+            {"kind": "narration", "chapter": "", "text": "Penutup.", "query": "sunset"}]}, [])
+        project.update({"topic": title, "angle": angle, "sources": sources})
+        return project
+
+    monkeypatch.setattr(topics, "generate_script", fake_script)
+    # Pengguna biasa ditolak
+    user = token("biasa@example.com")
+    assert c.post("/longform/topics", headers=user, json={"title": "IHSG"}).status_code == 403
+    assert c.post("/longform/ideas", headers=user, json={}).status_code == 403
+
+    # Topik sendiri tanpa sumber → berita dicari otomatis
+    res = c.post("/longform/topics", headers=h, json={"title": "IHSG anjlok", "angle": "dampak ke tabungan", "minutes": 5,
+                                                       "channel": "Klik Digital"})
+    assert res.status_code == 201, res.json
+    key = res.json["id"]
+    assert topics.is_topic_id(key) and res.json["kind"] == "topic" and res.json["source_ready"] is False
+    assert seen[0] == ("IHSG anjlok", "dampak ke tabungan", news, 5, "Klik Digital")
+    assert res.json["brand"]["channel"] == "Klik Digital"   # nama channel diingat untuk proyek berikutnya
+    assert res.json["project"]["sources"] == news
+
+    listed = c.get("/longform/topics", headers=h).json["projects"]
+    assert [p["id"] for p in listed] == [key] and listed[0]["title"] == "Video IHSG anjlok"
+    assert c.get(f"/longform/topics/{key}", headers=h).json["project"]["topic"] == "IHSG anjlok"
+
+    # Proyek topik tidak punya video sumber → adegan kutipan dibuang saat disimpan
+    project = c.get(f"/longform/topics/{key}", headers=h).json["project"]
+    scenes = project["scenes"] + [{"kind": "quote", "chapter": "", "text": "q", "start": 1, "end": 9}]
+    res = c.put(f"/longform/topics/{key}", headers=h, json={**project, "scenes": scenes})
+    assert [s["kind"] for s in res.json["project"]["scenes"]] == ["narration"] * 3
+
+    # Thumbnail: tanpa video stok → latar polos; gaya & warna jadi brand channel
+    assert c.post(f"/longform/topics/{key}/thumbnail", headers=h, json={"text": "  "}).status_code == 400
+    res = c.post(f"/longform/topics/{key}/thumbnail", headers=h,
+                 json={"text": "IHSG *Anjlok*, Panik?", "style": "panel", "accent": "merah"})
+    assert res.status_code == 200, res.json
+    thumb = res.json["project"]["thumbnail"]
+    assert thumb["text"] == "IHSG *Anjlok*, Panik?" and thumb["style"] == "panel" and thumb["scene_id"] is None
+    assert res.json["brand"] == {"channel": "Klik Digital", "accent": "merah", "style": "panel"}
+    img = c.get(thumb["url"].split("localhost", 1)[1])
+    assert img.status_code == 200 and img.data[:2] == bytes([0xFF, 0xD8])
+    assert c.put("/longform/brand", headers=user, json={"channel": "x"}).status_code == 403
+    assert c.put("/longform/brand", headers=h, json={"style": "editorial"}).json["brand"]["channel"] == "Klik Digital"
+
+    # Buat ulang naskah memakai topik & sumber yang tersimpan (thumbnail lama tetap ada)
+    assert c.post(f"/longform/topics/{key}/script", headers=h, json={"minutes": 8}).status_code == 200
+    assert seen[-1][0] == "IHSG anjlok" and seen[-1][2] == news and seen[-1][3] == 8 and seen[-1][4] == "Klik Digital"
+    assert c.get(f"/longform/topics/{key}", headers=h).json["project"]["thumbnail"]["filename"] == thumb["filename"]
+
+    # Deskripsi hasil render mencantumkan berita sumber (tanpa link podcast)
+    monkeypatch.setattr(longform, "synthesize", lambda text, voice, out, k: longform.wav_duration(_wav(out)))
+    for scene in c.get(f"/longform/topics/{key}", headers=h).json["project"]["scenes"]:
+        c.post(f"/longform/topics/{key}/scenes/{scene['id']}/tts", headers=h)
+
+    def fake_render(project, folder, source, transcript, label, out_name, cb):
+        assert source is None and transcript == []
+        make_video(os.path.join(folder, out_name), 1)
+        return {"filename": out_name, "durations": [3.0, 12.0, 5.0]}
+
+    monkeypatch.setattr(longform, "render", fake_render)
+    job = c.post(f"/longform/topics/{key}/render", headers=h).json["job"]
+    for _ in range(50):
+        if c.get(f"/jobs/{job['id']}", headers=h).json["job"]["status"] == "done":
+            break
+        time.sleep(0.1)
+    output = c.get(f"/longform/topics/{key}", headers=h).json["project"]["output"]
+    assert "Sumber:\n- IHSG melemah (Media): https://media.id/ihsg" in output["description"]
+    assert "Sumber podcast" not in output["description"]
+    assert c.get(output["url"].split("localhost", 1)[1]).status_code == 200
+
+    assert c.delete(f"/longform/topics/{key}", headers=h).status_code == 200
+    assert c.get(f"/longform/topics/{key}", headers=h).status_code == 404
+    assert c.get("/longform/topics", headers=h).json["projects"] == []
+
+
+def test_longform_recommended_ideas_are_cached(env, monkeypatch):
+    import topics
+    c, h = env["client"], token("admin@example.com")
+    calls = []
+    monkeypatch.setattr(topics, "gather_headlines", lambda q, n: calls.append(("feed", q, tuple(n))) or [{"title": "x"}])
+    monkeypatch.setattr(topics, "generate_ideas", lambda heads, text, key: calls.append(("ai", text)) or [
+        {"title": f"Ide {len(calls)}", "angle": "", "why": "", "sources": []}])
+    assert c.get("/longform/ideas/recommended", headers=token("biasa@example.com")).status_code == 403
+
+    first = c.get("/longform/ideas/recommended", headers=h).json
+    assert first["ideas"][0]["title"] == "Ide 2" and len(calls) == 2
+    assert c.get("/longform/ideas/recommended", headers=h).json["ideas"] == first["ideas"]       # dari cache
+    assert len(calls) == 2
+    # Niche berubah → dibuat ulang untuk niche baru
+    c.put("/me/niche", headers=h, json={"topics": ["investasi"], "comedy": True})
+    again = c.get("/longform/ideas/recommended", headers=h).json
+    assert calls[-2] == ("feed", "", ("investasi",)) and again["niche"] == ["Investasi & saham"]
+    # Muat ulang paksa
+    c.get("/longform/ideas/recommended?refresh=1", headers=h)
+    assert len(calls) == 6
+    # File cache tidak muncul sebagai proyek
+    assert c.get("/longform/topics", headers=h).json["projects"] == []

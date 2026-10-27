@@ -24,7 +24,8 @@ export function useRenderJob({ videoId, youtubeUrl, onClipsChanged }: UseRenderJ
   const onClipsChangedRef = useRef(onClipsChanged)
   useEffect(() => { onClipsChangedRef.current = onClipsChanged })
 
-  const applyJobs = useCallback((list: RenderJob[]) => {
+  const applyJobs = useCallback((all: RenderJob[]) => {
+    const list = all.filter(j => j.mode !== 'longform')  // video panjang punya halaman sendiri
     setJobs(list)
     let newClip = false
     for (const job of list) {

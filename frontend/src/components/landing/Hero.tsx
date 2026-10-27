@@ -1,6 +1,6 @@
 'use client'
 
-import AnalyzeForm from '@/components/AnalyzeForm'
+import CreateEntry from '@/components/CreateEntry'
 import ScoreMeter from '@/components/ScoreMeter'
 import { useScrollProgress } from '@/hooks/useScrollProgress'
 import { LandingMedia } from '@/hooks/useLandingMedia'
@@ -50,7 +50,7 @@ export default function Hero({ media, onSubmit, note }: Props) {
         </p>
 
         <div className="rise mt-8 max-w-2xl" style={{ animationDelay: '620ms' }}>
-          <AnalyzeForm onSubmit={onSubmit} isLoading={false} size="lg" />
+          <CreateEntry onSubmit={onSubmit} />
           {note && <p className="mt-3 text-sm text-ink-muted">{note}</p>}
         </div>
       </div>

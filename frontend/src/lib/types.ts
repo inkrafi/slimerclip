@@ -168,6 +168,8 @@ export interface RenderJobSegment {
 
 export interface RenderJob {
   id: string
+  /** "longform" = video panjang (satu "segmen" untuk seluruh video) */
+  mode?: 'preview' | 'final' | 'longform'
   video_id: string
   title: string
   status: 'queued' | 'downloading' | 'running' | 'done' | 'error'
@@ -176,6 +178,127 @@ export interface RenderJob {
   finished_at: number | null
   download: { status: string; progress: number }
   segments: Record<string, RenderJobSegment>
+}
+
+// ── Video panjang tanpa wajah (backend/longform.py) ──
+export type StockProvider = 'pixabay' | 'pexels'
+
+export interface StockVisual {
+  provider: StockProvider
+  id: number
+  link: string
+  thumb: string
+  page: string
+  credit: string
+  credit_url: string
+  duration: number
+}
+
+export interface LongformScene {
+  id: string
+  kind: 'narration' | 'quote'
+  /** Diisi pada adegan pertama sebuah bab */
+  chapter: string
+  text: string
+  /** Narasi: kata kunci pencarian video stok (bahasa Inggris) */
+  query?: string
+  visual?: StockVisual | null
+  /** Kutipan: rentang detik di video podcast */
+  start?: number
+  end?: number
+  audio?: { url: string; duration: number; source: 'tts' | 'record' }
+  /** stale = teks/suara diubah setelah suara AI dibuat */
+  audio_state?: 'missing' | 'stale' | 'ready'
+}
+
+export interface LongformVoice {
+  voice: string
+  style: string
+}
+
+export interface LongformOutput {
+  url: string
+  filename: string
+  rendered_at: string
+  duration: number
+  chapters: { at: number; title: string }[]
+  description: string
+}
+
+export interface NewsSource {
+  title: string
+  url: string
+  source: string
+  date: string
+}
+
+/** Ide video dari berita terbaru (backend/topics.py) */
+export interface TopicIdea {
+  title: string
+  angle: string
+  why: string
+  sources: NewsSource[]
+}
+
+export interface TopicProjectSummary {
+  id: string
+  title: string
+  topic: string
+  created_at: string
+  scenes: number
+  rendered_at: string | null
+  duration: number | null
+}
+
+/** Ciri khas channel: nama (disebut di naskah) + gaya & warna thumbnail */
+export interface LongformBrand {
+  channel: string
+  accent: string
+  style: string
+}
+
+export interface LongformThumbnail {
+  url: string
+  filename: string
+  text: string
+  style: string
+  accent: string
+  /** Adegan yang video stoknya jadi latar; null = latar polos */
+  scene_id: string | null
+}
+
+export interface LongformProject {
+  title: string
+  summary: string
+  /** Nama channel yang dipakai saat naskah ditulis */
+  channel?: string
+  /** Saran teks thumbnail dari AI (*kata* = aksen) */
+  thumbnail_ideas?: string[]
+  thumbnail?: LongformThumbnail | null
+  /** Proyek dari topik: topik, sudut pandang, dan berita sumbernya */
+  topic?: string
+  angle?: string
+  sources?: NewsSource[]
+  voice: LongformVoice
+  scenes: LongformScene[]
+  created_at?: string
+  output: LongformOutput | null
+}
+
+export interface LongformData {
+  /** podcast = dari video yang dianalisis; topic = dari topik/isu trending */
+  kind: 'podcast' | 'topic'
+  project: LongformProject | null
+  voices: { id: string; label: string }[]
+  durations: number[]
+  /** Penyedia video stok yang aktif (key diisi di backend/.env); null = latar polos */
+  stock_provider: StockProvider | null
+  /** File video podcast tersedia (untuk adegan kutipan) */
+  source_ready: boolean
+  brand: LongformBrand
+  /** id warna → hex */
+  thumb_accents: Record<string, string>
+  thumb_styles: { id: string; label: string }[]
 }
 
 /** Niche channel: topik kosong = semua momen ditampilkan */

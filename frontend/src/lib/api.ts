@@ -1,5 +1,5 @@
 import {
-  AnalysisResult, ClipGenerateOptions, ClipThumbnail, EditRecipe, EditTemplate, EditorAsset, EditorData, Me, NicheSetting, RenderJob, RenderOptions, RenderedClip, Segment,
+  AnalysisResult, ClipGenerateOptions, ClipThumbnail, EditRecipe, EditTemplate, EditorAsset, EditorData, LongformBrand, LongformData, LongformProject, Me, TopicIdea, TopicProjectSummary, NicheSetting, RenderJob, StockVisual, RenderOptions, RenderedClip, Segment,
   TranscriptSegment, UploadedFileInfo, VideoDetail, VideoSummary,
 } from '@/lib/types'
 import { accessToken } from '@/lib/supabase'
@@ -114,6 +114,73 @@ export const renderEdit = (videoId: string, key: string, edit: EditRecipe, optio
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key, edit, options, transcript }),
   }).then(r => r.job)
+
+// ── Video panjang ──
+/** Proyek dari topik berawalan "topic_"; selain itu proyek dari video podcast */
+export const isTopicKey = (key: string) => key.startsWith('topic_')
+const longformPath = (key: string) =>
+  isTopicKey(key) ? `/longform/topics/${encodeURIComponent(key)}` : `/videos/${encodeURIComponent(key)}/longform`
+const json = (method: string, body?: unknown): RequestInit => ({
+  method,
+  headers: { 'Content-Type': 'application/json' },
+  body: body === undefined ? undefined : JSON.stringify(body),
+})
+
+export const getLongform = (videoId: string) => request<LongformData>(longformPath(videoId))
+
+export const createLongformScript = (videoId: string, minutes: number, focus: string, channel: string) =>
+  request<LongformData>(`${longformPath(videoId)}/script`, json('POST', { minutes, focus, channel }))
+
+export const createLongformThumbnail = (videoId: string, body: { text: string; style: string; accent: string; scene_id: string }) =>
+  request<LongformData>(`${longformPath(videoId)}/thumbnail`, json('POST', body))
+
+export const saveLongformBrand = (brand: Partial<LongformBrand>) =>
+  request<{ brand: LongformBrand }>('/longform/brand', json('PUT', brand)).then(r => r.brand)
+
+export const saveLongform = (videoId: string, project: Pick<LongformProject, 'title' | 'summary' | 'voice' | 'scenes'>) =>
+  request<LongformData>(longformPath(videoId), json('PUT', {
+    title: project.title,
+    summary: project.summary,
+    voice: project.voice,
+    // Audio milik server: tidak dikirim
+    scenes: project.scenes.map(({ id, kind, chapter, text, query, visual, start, end }) => ({ id, kind, chapter, text, query, visual, start, end })),
+  }))
+
+export const longformTts = (videoId: string, sceneId: string) =>
+  request<LongformData>(`${longformPath(videoId)}/scenes/${encodeURIComponent(sceneId)}/tts`, { method: 'POST' })
+
+export const uploadLongformRecording = (videoId: string, sceneId: string, audio: Blob, filename: string) => {
+  const form = new FormData()
+  form.append('audio', audio, filename)
+  return request<LongformData>(`${longformPath(videoId)}/scenes/${encodeURIComponent(sceneId)}/recording`, { method: 'POST', body: form })
+}
+
+export const deleteLongformAudio = (videoId: string, sceneId: string) =>
+  request<LongformData>(`${longformPath(videoId)}/scenes/${encodeURIComponent(sceneId)}/audio`, { method: 'DELETE' })
+
+export const autoLongformVisuals = (videoId: string) =>
+  request<LongformData>(`${longformPath(videoId)}/visuals/auto`, { method: 'POST' })
+
+export const searchStock = (query: string) =>
+  request<{ results: StockVisual[] }>(`/longform/stock?q=${encodeURIComponent(query)}`).then(r => r.results)
+
+export const getTopicIdeas = (query: string, useNiche: boolean) =>
+  request<{ ideas: TopicIdea[]; headline_count: number }>('/longform/ideas', json('POST', { query, use_niche: useNiche }))
+
+/** Rekomendasi topik sesuai niche (disimpan server beberapa jam); refresh = buat ulang sekarang */
+export const getRecommendedIdeas = (refresh = false) =>
+  request<{ ideas: TopicIdea[]; generated_at: number; niche: string[] }>(`/longform/ideas/recommended${refresh ? '?refresh=1' : ''}`)
+
+export const listTopicProjects = () => request<{ projects: TopicProjectSummary[]; brand: LongformBrand }>('/longform/topics')
+
+export const createTopicProject = (body: { title: string; angle: string; sources: TopicIdea['sources']; minutes: number; channel: string }) =>
+  request<LongformData & { id: string }>('/longform/topics', json('POST', body))
+
+export const deleteTopicProject = (id: string) =>
+  request<{ message: string }>(`/longform/topics/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+export const renderLongform = (videoId: string) =>
+  request<{ job: RenderJob }>(`${longformPath(videoId)}/render`, { method: 'POST' }).then(r => r.job)
 
 export const getJob = (jobId: string) => request<{ job: RenderJob }>(`/jobs/${encodeURIComponent(jobId)}`).then(r => r.job)
 

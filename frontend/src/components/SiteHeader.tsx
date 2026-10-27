@@ -9,14 +9,17 @@ import { useAuth } from '@/components/AuthProvider'
 import RenderIndicator from '@/components/RenderIndicator'
 import { syne } from '@/lib/fonts'
 
+const isLongform = (p: string) => p.startsWith('/longform') || /^\/video\/[^/]+\/longform/.test(p)
+
 const NAV = [
-  { href: '/', label: 'Ruang kerja', match: (p: string) => p === '/' || p.startsWith('/video'), wide: true },
-  { href: '/riwayat', label: 'Riwayat', match: (p: string) => p.startsWith('/riwayat'), wide: false },
+  { href: '/', label: 'Ruang kerja', match: (p: string) => p === '/' || (p.startsWith('/video') && !isLongform(p)), wide: true, admin: false },
+  { href: '/longform', label: 'Video panjang', match: isLongform, wide: false, admin: true },
+  { href: '/riwayat', label: 'Riwayat', match: (p: string) => p.startsWith('/riwayat'), wide: false, admin: false },
 ]
 
 export default function SiteHeader() {
   const pathname = usePathname() || '/'
-  const { signedIn } = useAuth()
+  const { signedIn, me } = useAuth()
 
   return (
     <>
@@ -36,7 +39,7 @@ export default function SiteHeader() {
           <div className="flex items-center gap-3">
           <RenderIndicator />
           <nav aria-label="Navigasi utama" className="flex items-center gap-1 text-sm">
-            {NAV.map(item => {
+            {NAV.filter(item => !item.admin || me?.is_admin).map(item => {
               const active = item.match(pathname)
               return (
                 <Link

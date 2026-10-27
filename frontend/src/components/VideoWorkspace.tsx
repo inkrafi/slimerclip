@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Loader2 } from 'lucide-react'
+import { Film, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import SummaryBar from '@/components/SummaryBar'
 import CutMap from '@/components/CutMap'
@@ -214,6 +214,11 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
       <div className="mt-6 flex flex-wrap items-center gap-2">
         {clipCount > 0 && (
           <Link href={`/video/${videoId}/klip`} className="btn btn-quiet">Klip tersimpan ({clipCount})</Link>
+        )}
+        {me?.is_admin && (
+          <Link href={`/video/${videoId}/longform`} className="btn btn-quiet" title="Video 16:9 tanpa wajah dari podcast ini">
+            <Film className="size-4" aria-hidden /> Jadikan video panjang
+          </Link>
         )}
         <button type="button" onClick={reanalyze} disabled={isGenerating} className="btn btn-quiet">Analisis ulang</button>
       </div>
