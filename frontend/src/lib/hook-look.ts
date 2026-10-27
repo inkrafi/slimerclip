@@ -16,7 +16,7 @@ export const HOOK_STYLE_OPTIONS: { id: HookStyle; label: string; classic?: boole
 ]
 
 export const HOOK_ANIM_OPTIONS: { id: HookAnim; label: string }[] = [
-  { id: 'pop', label: 'Pop' }, { id: 'slide', label: 'Turun' }, { id: 'type', label: 'Per kata' }, { id: 'fade', label: 'Pudar' },
+  { id: 'cut', label: 'Langsung' }, { id: 'pop', label: 'Pop' }, { id: 'slide', label: 'Turun' }, { id: 'type', label: 'Per kata' }, { id: 'fade', label: 'Pudar' },
 ]
 
 export interface HookLook {
@@ -126,13 +126,15 @@ export interface HookFrame { opacity: number; scale: number; dy: number }
 /** Keadaan animasi masuk/keluar pada detik t (sama dengan tag \fad, \t, \move di hook_ass). */
 export function hookFrame(anim: HookAnim, t: number, end: number): HookFrame {
   const ms = t * 1000
-  const out = Math.max(0, Math.min(1, (end - t) / 0.2))
+  // Memudar di akhir: "cut" 0,5 dtk (bersama bayangan bawah), lainnya 0,2 dtk
+  const out = Math.max(0, Math.min(1, (end - t) / (anim === 'cut' ? 0.5 : 0.2)))
   const fadeIn = (len: number) => (len <= 0 ? 1 : Math.max(0, Math.min(1, ms / len)))
   if (anim === 'pop') {
     const scale = ms < 160 ? 0.7 + 0.38 * (ms / 160) : ms < 280 ? 1.08 - 0.08 * ((ms - 160) / 120) : 1
     return { opacity: fadeIn(80) * out, scale: Math.max(0.7, scale), dy: 0 }
   }
   if (anim === 'slide') return { opacity: fadeIn(120) * out, scale: 1, dy: -80 * (1 - Math.min(1, Math.max(0, ms / 260))) }
+  if (anim === 'cut') return { opacity: out, scale: 1, dy: 0 }
   if (anim === 'type') return { opacity: out, scale: 1, dy: 0 }
   return { opacity: fadeIn(150) * out, scale: 1, dy: 0 }
 }

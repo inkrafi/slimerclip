@@ -190,6 +190,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
         events = []
         pages = self._pages(self._caption_words(segments, style['uppercase']), style['words_per_line'])
+        if style['mode'] == 'duo':
+            events = self._duo_events(pages, style, y)
+            pages = []  # sudah ditangani
         for p_idx, page in enumerate(pages):
             next_start = pages[p_idx + 1][0]['start'] if p_idx + 1 < len(pages) else None
             page_end = page[-1]['end'] + 0.3
@@ -209,8 +212,65 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(header + "\n".join(events) + "\n")
 
-        print(f"File ASS berhasil dibuat: {output_path} ({len(pages)} halaman caption)")
+        print(f"File ASS berhasil dibuat: {output_path} ({len(events)} event caption)")
         return output_path
+
+    @staticmethod
+    def duo_lines(words: list, emph: int, stack: bool) -> list:
+        """Baris tampilan: satu baris, atau (stack) kata sebelum kata utama / kata utama / kata sesudahnya."""
+        if not stack:
+            return [list(range(len(words)))]
+        return [ix for ix in (list(range(emph)), [emph], list(range(emph + 1, len(words)))) if ix]
+
+    def _duo_events(self, pages: list, style: dict, y: int) -> list:
+        """
+        Tipografi dua font: kata utama tiap halaman (emphasis_index) memakai font serif miring, 1,5x lebih
+        besar, berwarna sorotan. Tanpa garis tepi → pendar gelap lembut agar tetap terbaca.
+        - reveal: kata yang belum diucapkan disembunyikan (tetap memegang tempatnya, jadi teks tidak bergeser)
+          lalu memudar masuk saat diucapkan; tanpa reveal satu halaman tampil utuh.
+        - stack: kata utama di baris sendiri.
+        """
+        from caption_styles import ACCENT_FONTS, EMPHASIS_SCALE, FONTS, emphasis_index
+        c = self.hex_to_ass_color
+        size = style['size']
+        base_font, accent_font = FONTS[style['font']], ACCENT_FONTS[style['accent_font']]
+        to_emph = rf"\fn{accent_font}\i1\fs{round(size * EMPHASIS_SCALE)}\c{c(style['highlight_color'])}"
+        to_base = rf"\fn{base_font}\i0\fs{size}\c{c(style['color'])}"
+        glowing = not style['background'] and style['outline_width'] == 0 and style['shadow'] == 0
+        glow = rf"\bord{max(3, size // 24)}\3c&H000000&\3a&H90&\blur{max(4, size // 12)}" if glowing else ""
+        line_alpha = "&H90&" if glowing else "&H00&"
+        hide = r"\1a&HFF&\3a&HFF&\4a&HFF&"
+        show = rf"\1a&HFF&\3a&HFF&\4a&HFF&\t(0,100,\1a&H00&\3a{line_alpha}\4a&H80&)"
+        pop = r"\fad(80,0)\fscx92\fscy92\t(0,140,\fscx100\fscy100)" if style['animation'] == 'pop' else ""
+        events = []
+        for p_idx, page in enumerate(pages):
+            next_start = pages[p_idx + 1][0]['start'] if p_idx + 1 < len(pages) else None
+            page_end = page[-1]['end'] + 0.3
+            if next_start is not None:
+                page_end = max(page[-1]['end'], min(page_end, next_start))
+            emph = emphasis_index([w['text'] for w in page])
+            lines = self.duo_lines(page, emph, style['stack'])
+            # reveal: satu event per kata (kata 0..i terlihat); tanpa reveal: satu event per halaman
+            steps = range(len(page)) if style['reveal'] else [len(page) - 1]
+            for i in steps:
+                start = page[0]['start'] if i == 0 or not style['reveal'] else page[i]['start']
+                end = page[i + 1]['start'] if style['reveal'] and i + 1 < len(page) else page_end
+                if end - start < 0.04:
+                    continue
+
+                def word(j):
+                    tags = to_emph if j == emph else ""
+                    if style['reveal'] and j == i and i > 0:
+                        tags += show
+                    elif style['reveal'] and j > i:
+                        tags += hide
+                    return ('{' + tags + '}' if tags else '') + page[j]['text'] + ('{' + to_base + '}' if j == emph else '')
+
+                text = r"\N".join(' '.join(word(j) for j in ix) for ix in lines)
+                intro = pop if i == 0 else ""
+                events.append(f"Dialogue: 0,{self.format_time_ass(start)},{self.format_time_ass(end)}"
+                              f",Default,,0,0,0,,{{\\an5\\pos(540,{y}){glow}{intro}}}{text}")
+        return events
 
 
 _shared = None

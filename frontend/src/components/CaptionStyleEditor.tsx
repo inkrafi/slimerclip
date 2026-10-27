@@ -2,9 +2,9 @@
 
 import { RotateCcw } from 'lucide-react'
 import CaptionPreview from '@/components/CaptionPreview'
-import { CAPTION_FONT_CSS } from '@/lib/caption-fonts'
+import { ACCENT_FONT_CSS, CAPTION_FONT_CSS } from '@/lib/caption-fonts'
 import {
-  CAPTION_FONTS, CAPTION_PRESETS, CaptionFont, CaptionStyle, HIGHLIGHT_SWATCHES, HighlightStyle, presetOf,
+  ACCENT_FONTS, AccentFont, CAPTION_FONTS, CAPTION_PRESETS, CaptionFont, CaptionStyle, HIGHLIGHT_SWATCHES, HighlightStyle, presetOf,
 } from '@/lib/caption-presets'
 
 interface Props {
@@ -45,7 +45,7 @@ export default function CaptionStyleEditor({ value, onChange, disabled, sampleWo
                 <span
                   className="w-12 shrink-0 truncate text-[13px] leading-none"
                   style={{
-                    ...CAPTION_FONT_CSS[p.style.font],
+                    ...(p.style.mode === 'duo' ? ACCENT_FONT_CSS[p.style.accent_font] : CAPTION_FONT_CSS[p.style.font]),
                     color: p.style.highlight_style === 'none' ? p.style.color : p.style.highlight_color,
                     textTransform: p.style.uppercase ? 'uppercase' : 'none',
                   }}
@@ -89,25 +89,47 @@ export default function CaptionStyleEditor({ value, onChange, disabled, sampleWo
             format={v => (v < 38 ? 'atas' : v > 62 ? 'bawah' : 'tengah')}
           />
 
-          <Row label="Sorotan kata">
-            <div role="radiogroup" aria-label="Sorotan kata" className="grid grid-cols-3 rounded-md border border-rule p-0.5 text-xs">
-              {([['color', 'Warna'], ['box', 'Kotak'], ['none', 'Tanpa']] as [HighlightStyle, string][]).map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  role="radio"
-                  aria-checked={value.highlight_style === id}
-                  disabled={id === 'box' && value.background}
-                  onClick={() => set('highlight_style', id)}
-                  className={`h-7 px-2 rounded-[5px] ${value.highlight_style === id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}
-                >
+          <Row label="Tipografi">
+            <div role="radiogroup" aria-label="Tipografi caption" className="grid grid-cols-2 rounded-md border border-rule p-0.5 text-xs">
+              {([['karaoke', 'Sorot kata'], ['duo', 'Dua font']] as const).map(([id, label]) => (
+                <button key={id} type="button" role="radio" aria-checked={value.mode === id} onClick={() => set('mode', id)}
+                  className={`h-7 px-2 rounded-[5px] whitespace-nowrap ${value.mode === id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
                   {label}
                 </button>
               ))}
             </div>
           </Row>
-          {value.highlight_style !== 'none' && (
-            <Row label="Warna sorotan">
+          {value.mode === 'duo' ? (
+            <Row label="Font kata utama">
+              <select
+                className="rounded-md border border-rule bg-bay px-2 h-8 text-ink max-w-[10rem]"
+                value={value.accent_font}
+                onChange={e => set('accent_font', e.target.value as AccentFont)}
+              >
+                {ACCENT_FONTS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+              </select>
+            </Row>
+          ) : (
+            <Row label="Sorotan kata">
+              <div role="radiogroup" aria-label="Sorotan kata" className="grid grid-cols-3 rounded-md border border-rule p-0.5 text-xs">
+                {([['color', 'Warna'], ['box', 'Kotak'], ['none', 'Tanpa']] as [HighlightStyle, string][]).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={value.highlight_style === id}
+                    disabled={id === 'box' && value.background}
+                    onClick={() => set('highlight_style', id)}
+                    className={`h-7 px-2 rounded-[5px] ${value.highlight_style === id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+          )}
+          {(value.mode === 'duo' || value.highlight_style !== 'none') && (
+            <Row label={value.mode === 'duo' ? 'Warna kata utama' : 'Warna sorotan'}>
               <div className="flex items-center gap-1.5">
                 {HIGHLIGHT_SWATCHES.map(c => (
                   <button
@@ -137,7 +159,13 @@ export default function CaptionStyleEditor({ value, onChange, disabled, sampleWo
           )}
 
           <Toggle label="Huruf kapital" checked={value.uppercase} onChange={v => set('uppercase', v)} />
-          <Toggle label="Efek pop pada kata aktif" checked={value.animation === 'pop'} onChange={v => set('animation', v ? 'pop' : 'none')} />
+          {value.mode === 'duo' && (
+            <>
+              <Toggle label="Kata muncul sesuai ucapan" checked={value.reveal} onChange={v => set('reveal', v)} />
+              <Toggle label="Kata utama di baris sendiri" checked={value.stack} onChange={v => set('stack', v)} />
+            </>
+          )}
+          <Toggle label={value.mode === 'duo' ? 'Efek pop saat muncul' : 'Efek pop pada kata aktif'} checked={value.animation === 'pop'} onChange={v => set('animation', v ? 'pop' : 'none')} />
           <Toggle
             label="Latar gelap di belakang teks"
             checked={value.background}

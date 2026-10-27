@@ -8,6 +8,7 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
+from niche import normalize_category
 from prompt_templates import clip_analysis_schema, get_clip_analysis_prompt, target_segment_count
 from scoring import score_segments
 from transcript_service import TranscriptUnavailable, get_transcript_lines
@@ -236,9 +237,11 @@ Deskripsi Singkat: {metadata.get('description')}
     # Skor akhir: gabungan penilaian AI, data "Most replayed" YouTube, dan struktur momen
     video_duration = metadata.get("duration") or (transcript_lines[-1][1] if transcript_lines else 0)
     from_ai = len(result_data["segments"])
-    result_data["segments"] = score_segments(
-        result_data["segments"], transcript_lines, metadata.get("heatmap") or [], video_duration
-    )
+    scored = score_segments(result_data["segments"], transcript_lines, metadata.get("heatmap") or [], video_duration)
+    for seg in scored:
+        seg["category"] = normalize_category(seg.get("category"))
+    # Skema tidak bisa membatasi jumlah maksimal → ambil yang skornya tertinggi
+    result_data["segments"] = sorted(scored, key=lambda s: s.get("viral_score", 0), reverse=True)[:count]
     print(f"[Analisis] {video_id}: diminta {count} momen, Gemini memberi {from_ai}, "
           f"tersisa {len(result_data['segments'])} setelah dirapikan")
     result_data["total_clip_recommendations"] = len(result_data["segments"])

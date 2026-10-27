@@ -7,9 +7,10 @@ import { toast } from 'sonner'
 import CaptionStyleEditor, { Range, Row, Toggle } from '@/components/CaptionStyleEditor'
 import AssetPicker from '@/components/editor/AssetPicker'
 import ClipTitleField from '@/components/editor/ClipTitleField'
-import { MarksPreview, VignettePreview } from '@/components/editor/EffectPreview'
+import { HookShade, MarksPreview, VignettePreview } from '@/components/editor/EffectPreview'
 import { HookOverlay, LiveCaption } from '@/components/editor/LiveOverlays'
 import SfxPanel from '@/components/editor/SfxPanel'
+import ThumbnailPanel from '@/components/editor/ThumbnailPanel'
 import TemplatePanel from '@/components/editor/TemplatePanel'
 import TranscriptEditor from '@/components/editor/TranscriptEditor'
 import TrimBar from '@/components/editor/TrimBar'
@@ -33,7 +34,7 @@ const POSITIONS: { id: WatermarkPosition; label: string }[] = [
 const VIGNETTE_SHAPES: { id: VignetteShape; label: string }[] = [
   { id: 'bottom', label: 'Bawah' }, { id: 'top', label: 'Atas' }, { id: 'both', label: 'Atas & bawah' }, { id: 'radial', label: 'Lingkaran' },
 ]
-const HOOK_DURATIONS = [3, 5, 8, 0]
+const HOOK_DURATIONS = [3, 4, 5, 0]
 const RESOLUTIONS: { id: RenderOptions['resolution']; label: string; hint: string }[] = [
   { id: '720', label: '720p', hint: '720×1280. File kecil, untuk pratinjau atau kuota data terbatas.' },
   { id: '1080', label: '1080p', hint: '1080×1920. Standar TikTok, Reels & Shorts.' },
@@ -234,6 +235,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
   const clipTime = playhead === null ? 0 : playhead - edit.start
   // Sebelum diputar atau saat teks hook diketik: tampilkan keadaan akhir (tanpa animasi)
   const hookSettled = hookFocus || playhead === null
+  const hookWords = edit.hook.text.replaceAll('*', ' ').split(/\s+/).filter(Boolean).length
   const hookEnd = edit.hook.duration <= 0 ? edit.end - edit.start : Math.min(edit.end - edit.start, edit.hook.duration)
   const finalUrl = data.clip.url
   const canDownload = !!finalUrl && !dirty && !rendering
@@ -267,6 +269,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
             />
             {vignetteChanged && <VignettePreview vignette={edit.vignette} />}
             {marksChanged && <MarksPreview marks={edit.marks} logoUrl={logo?.url} />}
+            {clean && <HookShade hook={edit.hook} time={hookSettled ? Infinity : clipTime} end={hookSettled ? Infinity : hookEnd} clipEnd={edit.end - edit.start} />}
             {clean && options.caption_enabled && transcript && (
               <LiveCaption
                 segments={transcript}
@@ -333,7 +336,11 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
                   onChange={e => setHook({ text: e.target.value })}
                   className="field-sizing-content min-h-16 w-full resize-none rounded-md border border-rule bg-bay px-3 py-2 text-ink focus:border-signal focus:outline-none"
                 />
-                <p className="-mt-2 text-xs text-ink-muted">Apit kata dengan bintang, mis. <span className="font-mono text-ink">*selalu kalah*</span>, agar diberi warna aksen.</p>
+                <p className="-mt-2 text-xs text-ink-muted">
+                  Pendek lebih kuat: 3–6 kata yang bikin penasaran tanpa membocorkan akhirnya.
+                  {' '}<span className={hookWords > 8 ? 'text-signal' : ''}>{hookWords} kata.</span>
+                  {' '}Apit kata dengan bintang, mis. <span className="font-mono text-ink">*selalu kalah*</span>, agar diberi warna aksen.
+                </p>
                 <Row label="Label">
                   <input
                     value={edit.hook.label}
@@ -371,6 +378,8 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
                     ))}
                   </div>
                 </Row>
+                <Range label="Bayangan bawah" value={edit.hook.shade} min={0} max={100} step={5}
+                  onChange={v => setHook({ shade: v })} format={v => (v === 0 ? 'mati' : `${v}%`)} />
                 <div>
                   <p className="text-ink-muted">Gaya</p>
                   <div role="radiogroup" aria-label="Gaya hook" className="mt-1.5 grid grid-cols-3 gap-y-0.5 rounded-md border border-rule p-0.5 text-xs">
@@ -394,7 +403,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
                   </div>
                 </Row>
                 <Row label="Animasi">
-                  <div role="radiogroup" aria-label="Animasi hook" className="grid grid-cols-4 rounded-md border border-rule p-0.5 text-xs">
+                  <div role="radiogroup" aria-label="Animasi hook" className="grid grid-cols-5 rounded-md border border-rule p-0.5 text-xs">
                     {HOOK_ANIM_OPTIONS.map(a => (
                       <button key={a.id} type="button" role="radio" aria-checked={edit.hook.anim === a.id}
                         onClick={() => { setHook({ anim: a.id }); seek(edit.start) }}
@@ -420,6 +429,10 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
             )}
           </Section>
 
+          <Section title="Thumbnail" hint="Gambar cover 9:16 untuk Shorts, TikTok & Reels: wajah yang jelas dan teks besar.">
+            <ThumbnailPanel videoId={videoId} clipKey={clipKey} initial={data.thumbnail} suggestion={data.thumbnail_suggestion}
+              hook={edit.hook} playhead={playhead} />
+          </Section>
           <Section title="Caption">
             <Toggle label="Caption otomatis" checked={options.caption_enabled} onChange={v => setOptions({ ...options, caption_enabled: v })} />
             {options.caption_enabled && (

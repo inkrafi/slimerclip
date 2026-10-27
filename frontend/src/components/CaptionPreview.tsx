@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ASS_EM_SCALE, CAPTION_FONT_CSS } from '@/lib/caption-fonts'
-import type { CaptionStyle } from '@/lib/caption-presets'
+import { ACCENT_EM_SCALE, ACCENT_FONT_CSS, ASS_EM_SCALE, CAPTION_FONT_CSS } from '@/lib/caption-fonts'
+import { duoLines, EMPHASIS_SCALE, emphasisIndex, type CaptionStyle } from '@/lib/caption-presets'
 
 /** Nilai dalam satuan video 1080 px → ukuran relatif terhadap lebar wadah (container query). */
 const u = (value: number) => `${(value / 10.8).toFixed(3)}cqw`
@@ -37,6 +37,43 @@ export function CaptionPage({ style, words, active }: { style: CaptionStyle; wor
       boxDecorationBreak: 'clone',
       WebkitBoxDecorationBreak: 'clone',
     }),
+  }
+
+  if (style.mode === 'duo') {
+    // Tipografi dua font (CaptionService._duo_events): halaman tampil utuh, satu kata utama
+    const shown = words.map(w => (style.uppercase ? w.toUpperCase() : w))
+    const emph = emphasisIndex(shown)
+    const glow = !style.background && !style.outline_width && !style.shadow
+      ? `0 0 ${u(style.size / 12)} rgb(0 0 0 / 0.45), 0 0 ${u(style.size / 6)} rgb(0 0 0 / 0.35)` : textStyle.textShadow
+    // reveal: kata yang belum diucapkan tetap memegang tempatnya, hanya tak terlihat
+    const visible = (i: number) => !style.reveal || active < 0 || i <= active
+    return (
+      <span className="inline" style={{ ...textStyle, textTransform: 'none', textShadow: glow }}>
+        {duoLines(shown.length, emph, style.stack).map((line, li) => (
+          <span key={li}>
+            {li > 0 && <br />}
+            {line.map((i, k) => (
+              <span key={i}>
+                {k > 0 && ' '}
+                <span
+                  className="transition-opacity duration-100"
+                  style={{
+                    opacity: visible(i) ? 1 : 0,
+                    ...(i === emph && {
+                      ...ACCENT_FONT_CSS[style.accent_font],
+                      fontSize: u(style.size * EMPHASIS_SCALE * ACCENT_EM_SCALE[style.accent_font]),
+                      color: style.highlight_color,
+                    }),
+                  }}
+                >
+                  {shown[i]}
+                </span>
+              </span>
+            ))}
+          </span>
+        ))}
+      </span>
+    )
   }
 
   return (

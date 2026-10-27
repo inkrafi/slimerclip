@@ -84,7 +84,7 @@ def test_hook_sanitized_and_rendered():
                                    "style": "x", "font": "comic-sans"}}, 0, 30)
     hook = edit["hook"]
     assert hook["text"] == "Baris satu\nbaris dua\nbaris tiga" and hook["duration"] == 60
-    assert hook["style"] == "spotlight" and hook["font"] == "montserrat" and hook["anim"] == "pop"
+    assert hook["style"] == "spotlight" and hook["font"] == "montserrat" and hook["anim"] == "cut"
     ass = clip_effects.hook_ass(hook, 30, "Montserrat Black")
     assert r"Baris satu\Nbaris dua\Nbaris tiga" in ass and ",0:00:30.00,Hook," in ass  # durasi dipotong ke panjang klip
     assert clip_effects.hook_ass({**hook, "enabled": False}, 30, "Montserrat Black") is None
@@ -120,3 +120,79 @@ def test_layout_template_sizes():
     from speaker_layout import SpeakerLayoutPlanner, sized
     graph = sized(SpeakerLayoutPlanner.center_graph(1920, 1080), 2160, 3840)
     assert "scale=2160:3840:flags=lanczos" in graph and "@" not in graph
+
+
+def test_hook_shade_fades_with_hook():
+    edit = clip_effects.sanitize_edit({"hook": {"enabled": True, "text": "Kenapa dia *nolak*?", "duration": 4}}, 0, 30)
+    hook = edit["hook"]
+    assert hook["shade"] == 85 and hook["anim"] == "cut"
+    assert clip_effects.hook_shade(hook) == {"shape": "bottom", "strength": 85, "height": clip_effects.HOOK_SHADE_HEIGHT}
+    assert r"\fad(0,500)" in clip_effects.hook_ass(hook, 30, "Montserrat Black")
+    graph = clip_effects.hook_shade_filter(2, "vshade", "vhookshade", clip_effects.hook_end(hook, 30), 30)
+    assert "fade=t=out:st=3.50:d=0.5:alpha=1" in graph and graph.endswith("[vhookshade]")
+    # Hook sepanjang klip → bayangan tidak memudar; shade 0 → tanpa bayangan
+    assert "t=out" not in clip_effects.hook_shade_filter(2, "a", "b", 30, 30)
+    assert clip_effects.hook_shade({**hook, "shade": 0}) is None
+
+
+def test_thumbnail_text_and_size():
+    import thumbnail
+    assert thumbnail.clean_text("a\n\nb\nc\nd {x}") == "a\nb\nc"
+    # Kata pendek → teks lebih besar; batas 130-260
+    assert thumbnail.text_size("*NGAKU*") == 260 and thumbnail.text_size("Gaji 2 juta bisa beli rumah?") == 153
+    assert thumbnail.text_size("Ditolak\n1 MILIAR") > thumbnail.text_size("Ditolak 1 MILIAR")
+
+
+def test_duo_caption_emphasis():
+    from caption_styles import emphasis_index, sanitize_caption_style
+    assert emphasis_index(["Ini", "penting"]) == 1
+    assert emphasis_index(["banget", "yang"]) == 0      # kata sambung tidak ditonjolkan
+    assert emphasis_index(["dan", "yang"]) == 1
+    style = sanitize_caption_style({"mode": "duo", "accent_font": "dmserif"})
+    assert style["mode"] == "duo" and style["accent_font"] == "dmserif"
+    assert sanitize_caption_style({"mode": "x", "accent_font": "comic"})["mode"] == "karaoke"
+
+
+def test_duo_reveal_and_stack(tmp_path):
+    from caption_service import CaptionService
+    segs = [{"words": [{"start": 0, "end": .5, "word": "Ini"}, {"start": .6, "end": 1.2, "word": "penting"}]}]
+    path = tmp_path / "c.ass"
+    CaptionService.__new__(CaptionService).generate_ass(
+        segs, str(path), {"mode": "duo", "words_per_line": 2, "reveal": True, "stack": True, "outline_width": 0})
+    events = [l for l in path.read_text(encoding="utf-8").splitlines() if l.startswith("Dialogue")]
+    # Satu event per kata; kata yang belum diucapkan disembunyikan, lalu memudar masuk
+    assert len(events) == 2 and r"\1a&HFF&" in events[0] and r"\t(0,100,\1a&H00&" in events[1]
+    assert r"INI\N{" in events[0]  # kata utama di baris sendiri
+    assert CaptionService.duo_lines(["a", "b", "c"], 1, True) == [[0], [1], [2]]
+    assert CaptionService.duo_lines(["a", "b"], 0, False) == [[0, 1]]
+
+
+def test_upload_kit_from_analysis_and_fallback():
+    import upload_kit
+    kit = upload_kit.build({"title_options": ["Dulu Sopir *Angkot*, Sekarang Kaya! 🔥", "Kenapa Dia Nolak 1 Miliar?"],
+                            "upload_description": "Kisah jatuh bangun sebelum sukses. #bisnis",
+                            "hashtags": ["Bisnis", "#cerita sukses", "#bisnis", "#kaya"]},
+                           "Dulu Sopir Angkot, Sekarang Kaya!", [])
+    assert kit["titles"] == ["Dulu Sopir Angkot, Sekarang Kaya!", "Kenapa Dia Nolak 1 Miliar?"]
+    assert kit["hashtags"] == ["#bisnis", "#ceritasukses", "#kaya"]
+    assert kit["description_full"] == "Kisah jatuh bangun sebelum sukses.\n\n#bisnis #ceritasukses #kaya"
+
+    # Analisis lama: judul + ide hook, topik + kutipan, hashtag dari caption / sudut konten
+    old = upload_kit.build({"speaker_quote": "Waktu itu nggak bisa dibeli", "content_angle": "INSPIRASI",
+                            "caption_suggestion": "Waktu itu mahal #motivasi"},
+                           "Musuh terbesar manusia", ["Musuhmu *bukan* elit global", "musuh terbesar manusia"],
+                           "Pembicara membahas waktu sebagai aset utama")
+    assert old["titles"] == ["Musuh terbesar manusia", "Musuhmu bukan elit global"]
+    assert old["description"] == "Pembicara membahas waktu sebagai aset utama. “Waktu itu nggak bisa dibeli”"
+    assert old["hashtags"] == ["#motivasi", "#inspirasi", "#podcast"]
+
+
+def test_prompt_segment_range_and_categories():
+    import niche
+    from prompt_templates import clip_analysis_schema, get_clip_analysis_prompt
+    prompt = get_clip_analysis_prompt(12)
+    assert "MINIMAL 8, maksimal 12" in prompt and "{MIN}" not in prompt
+    assert clip_analysis_schema(12)["properties"]["segments"]["minItems"] == 8
+    assert clip_analysis_schema(6)["properties"]["segments"]["minItems"] == 6
+    assert "category" in clip_analysis_schema(5)["properties"]["segments"]["items"]["required"]
+    assert niche.normalize_category(" Investasi ") == "investasi" and niche.normalize_category("gosip") == "lainnya"

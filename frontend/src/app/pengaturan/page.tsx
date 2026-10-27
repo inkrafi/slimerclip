@@ -8,9 +8,10 @@ import { toast } from 'sonner'
 import { useAuth } from '@/components/AuthProvider'
 import Avatar from '@/components/Avatar'
 import RequireAuth from '@/components/RequireAuth'
-import { deleteAccount, deleteGeminiKey, saveGeminiKey } from '@/lib/api'
+import { deleteAccount, deleteGeminiKey, saveGeminiKey, saveNiche } from '@/lib/api'
+import { CATEGORY_LABELS, NICHE_TOPICS } from '@/lib/niche'
 import { safeNext } from '@/lib/supabase'
-import { Me } from '@/lib/types'
+import { Me, NicheSetting } from '@/lib/types'
 
 export default function SettingsPage() {
   return (
@@ -58,6 +59,8 @@ function Settings() {
 
       <Usage me={me} />
 
+      <Niche me={me} onSaved={refreshMe} />
+
       {enabled && <GeminiKey me={me} onSaved={refreshMe} backTo={backTo} />}
 
       {enabled && (
@@ -70,6 +73,63 @@ function Settings() {
         </section>
       )}
     </div>
+  )
+}
+
+function Niche({ me, onSaved }: { me: Me; onSaved: () => void }) {
+  const [value, setValue] = useState<NicheSetting>(me.niche)
+  const [busy, setBusy] = useState(false)
+  const dirty = JSON.stringify(value) !== JSON.stringify(me.niche)
+
+  const toggle = (topic: string) =>
+    setValue(v => ({ ...v, topics: v.topics.includes(topic) ? v.topics.filter(t => t !== topic) : [...v.topics, topic] }))
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      await saveNiche(value)
+      onSaved()
+      toast.success('Niche tersimpan')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Niche gagal disimpan.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section aria-labelledby="niche-title" className="mt-12">
+      <h2 id="niche-title" className="type-heading text-xl text-ink">Niche channel</h2>
+      <p className="mt-1 text-sm text-ink-muted max-w-[60ch]">
+        Momen di luar topik pilihanmu disembunyikan di hasil analisis (tetap bisa ditampilkan). Kalau tidak ada yang dipilih,
+        semua momen ditampilkan.
+      </p>
+      <fieldset className="mt-4">
+        <legend className="sr-only">Topik niche</legend>
+        <div className="flex flex-wrap gap-2">
+          {NICHE_TOPICS.map(topic => {
+            const on = value.topics.includes(topic)
+            return (
+              <button key={topic} type="button" aria-pressed={on} onClick={() => toggle(topic)}
+                className={`h-8 rounded-full border px-3 text-sm ${on ? 'border-signal bg-signal/15 text-ink' : 'border-rule text-ink-muted hover:text-ink'}`}>
+                {CATEGORY_LABELS[topic]}
+              </button>
+            )
+          })}
+        </div>
+      </fieldset>
+      <label className="mt-4 flex items-start gap-3 text-sm">
+        <input type="checkbox" checked={value.comedy} onChange={e => setValue(v => ({ ...v, comedy: e.target.checked }))}
+          className="mt-0.5 size-4 accent-signal" />
+        <span>
+          <span className="text-ink">Sertakan momen lucu sebagai selingan</span>
+          <span className="block text-ink-muted">Momen komedi tetap ditampilkan walau di luar niche, siapa tahu itu yang meledak.</span>
+        </span>
+      </label>
+      <button type="button" onClick={save} disabled={busy || !dirty} className="btn btn-primary mt-4">
+        {busy ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Menyimpan…</> : 'Simpan niche'}
+      </button>
+    </section>
   )
 }
 

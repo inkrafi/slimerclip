@@ -48,7 +48,7 @@ MIN_CLIP_SECONDS = 3
 MAX_SFX = 30
 # Gaya hook: spotlight/tape/poster (khas SlimerClip) + light/dark/outline (klasik)
 HOOK_STYLES = ("spotlight", "tape", "poster", "light", "dark", "outline")
-HOOK_ANIMS = ("pop", "slide", "type", "fade")
+HOOK_ANIMS = ("cut", "pop", "slide", "type", "fade")
 HOOK_ACCENTS = {"pink": "#FF4D8D", "yellow": "#FFD23F", "lime": "#B6F23A", "cyan": "#38D9F5", "white": "#FFFFFF"}
 HOOK_MAX_CHARS = 120
 HOOK_LABEL_MAX = 24
@@ -69,8 +69,8 @@ DEFAULT_EDIT = {
     },
     "music": {"asset": "", "volume": 35, "ducking": True},
     "sfx": [],
-    "hook": {"enabled": False, "text": "", "label": "", "duration": 4, "style": "spotlight", "anim": "pop",
-             "accent": "pink", "font": "montserrat", "size": 80, "position_y": 14},
+    "hook": {"enabled": False, "text": "", "label": "", "duration": 4, "style": "spotlight", "anim": "cut",
+             "accent": "pink", "font": "montserrat", "size": 110, "position_y": 50, "shade": 85},
 }
 
 
@@ -194,6 +194,8 @@ def sanitize_edit(raw, default_start: float, default_end: float, video_duration:
         "font": hook.get("font") if hook.get("font") in FONTS else d_hook["font"],
         "size": int(_num(hook.get("size"), d_hook["size"], 40, 130)),
         "position_y": int(_num(hook.get("position_y"), d_hook["position_y"], 5, 80)),
+        # Bayangan bawah selama hook tampil (0 = mati), memudar saat hook hilang
+        "shade": int(_num(hook.get("shade"), d_hook["shade"], 0, 100)),
     }
 
     return {
@@ -231,11 +233,11 @@ def suggested_title(segment: dict) -> str:
     return topic.rstrip(" ,") or ""
 
 
-def download_filename(title: str, fallback: str) -> str:
+def download_filename(title: str, fallback: str, ext: str = ".mp4") -> str:
     """Nama file unduhan dari judul: aman di Windows/macOS/Android, huruf non-Latin dipertahankan."""
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", clean_title(title))
     name = re.sub(r"\s+", " ", name).strip(" .")[:FILENAME_MAX].strip(" .")
-    return f"{name or fallback}.mp4"
+    return f"{name or fallback}{ext}"
 
 
 TEMPLATE_PARTS = ("vignette", "marks", "music", "hook")
@@ -253,6 +255,24 @@ def template_style(raw_edit) -> dict:
     style = {part: edit[part] for part in TEMPLATE_PARTS}
     style["hook"]["text"] = ""
     return style
+
+
+def apply_template(edit: dict, style: dict, hook_text: str, has_asset, source_text: str | None) -> dict:
+    """
+    Format edit (hasil template_style) di atas resep satu klip, seperti tombol "Terapkan" di editor:
+    rentang, teks hook, dan efek suara klip tetap; aset yang sudah dihapus dilewati.
+    source_text = teks sumber dari channel video (format dengan "sumber otomatis"), None = dari format.
+    """
+    marks = {kind: dict(mark) for kind, mark in style["marks"].items()}
+    if marks["logo"]["asset"] and not has_asset(marks["logo"]["asset"]):
+        marks["logo"].update(asset="", enabled=False)
+    if source_text is not None:
+        marks["source"]["text"] = source_text
+    music = dict(style["music"])
+    if music["asset"] and not has_asset(music["asset"]):
+        music["asset"] = ""
+    hook = {**style["hook"], "text": hook_text, "enabled": style["hook"]["enabled"] and bool(hook_text)}
+    return {**edit, "vignette": dict(style["vignette"]), "marks": marks, "music": music, "hook": hook}
 
 
 def sanitize_transcript(raw) -> list | None:
@@ -506,7 +526,13 @@ def hook_block_top(hook: dict) -> tuple:
     return top + pad, top + 2 * pad + size + round(hook["size"] * 0.18) + main_pad
 
 
+HOOK_CUT_FADE_OUT = 500  # ms; "cut" memudar lebih pelan (animasi lain 200), bersama bayangannya
+
+
 def _anim_tags(anim: str, y: int) -> str:
+    if anim == "cut":
+        # Langsung muncul penuh (tanpa animasi masuk), lalu memudar
+        return rf"\fad(0,{HOOK_CUT_FADE_OUT})"
     if anim == "pop":
         return r"\fad(80,200)\fscx70\fscy70\t(0,160,\fscx108\fscy108)\t(160,280,\fscx100\fscy100)"
     if anim == "slide":
@@ -514,6 +540,27 @@ def _anim_tags(anim: str, y: int) -> str:
     if anim == "type":
         return r"\fad(0,200)"
     return r"\fad(150,200)"
+
+
+HOOK_SHADE_HEIGHT = 70        # % tinggi layar
+HOOK_SHADE_OUT = HOOK_CUT_FADE_OUT / 1000  # detik; bayangan langsung tampil, memudar bersama teks
+
+
+def hook_end(hook: dict, duration: float) -> float:
+    return duration if hook["duration"] <= 0 else min(duration, hook["duration"])
+
+
+def hook_shade(hook: dict) -> dict | None:
+    """Vignette bawah yang ikut tampil bersama hook (bentuknya sama dengan write_shade_png)."""
+    if not hook.get("enabled") or not hook.get("text") or hook.get("shade", 0) <= 0:
+        return None
+    return {"shape": "bottom", "strength": hook["shade"], "height": HOOK_SHADE_HEIGHT}
+
+
+def hook_shade_filter(index: int, src: str, dst: str, end: float, duration: float) -> str:
+    """Bayangan hook (input gambar berulang sepanjang `end` detik): langsung tampil, memudar bersama teks hook."""
+    fades = f",fade=t=out:st={max(0.0, end - HOOK_SHADE_OUT):.2f}:d={HOOK_SHADE_OUT}:alpha=1" if end < duration else ""
+    return f"[{index}:v]format=rgba{fades}[hshade];[{src}][hshade]overlay=format=auto:eof_action=pass[{dst}]"
 
 
 def hook_ass(hook: dict, duration: float, font_family: str) -> str | None:
@@ -525,7 +572,7 @@ def hook_ass(hook: dict, duration: float, font_family: str) -> str | None:
     if not hook.get("enabled") or not hook.get("text"):
         return None
     look = hook_look(hook)
-    end = duration if hook["duration"] <= 0 else min(duration, hook["duration"])
+    end = hook_end(hook, duration)
     label_y, main_y = hook_block_top(hook)
     fill = _ass_color(look["fill"])
     line = _ass_color(look["line"], look["line_alpha"])

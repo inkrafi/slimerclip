@@ -7,6 +7,7 @@ from caption_service import get_caption_service
 import clip_effects
 from caption_styles import FONTS, FONTS_DIR
 from speaker_layout import SpeakerLayoutPlanner, _probe, sized
+import thumbnail
 
 CLIPS_DIR = os.path.join(os.path.dirname(__file__), "clips")
 os.makedirs(CLIPS_DIR, exist_ok=True)
@@ -196,6 +197,53 @@ class RenderPipeline:
                 relative.append({"start": words[0]["start"], "end": words[-1]["end"], "words": words})
         return relative
 
+    def render_thumbnail(self, video_path: str, start_sec: float, end_sec: float, at: float, options: dict,
+                         output_dir: str, base_name: str, hook: dict, use_layout: bool = True) -> str:
+        """
+        Thumbnail 1080x1920 (<nama>.thumb.jpg) pada detik `at` (relatif awal klip): tata letak sama dengan
+        klipnya (memakai cache tata letak), bayangan bawah, dan teks besar (thumbnail.thumbnail_hook).
+        use_layout=False → video_path sudah klip 9:16 (pratinjau), cukup diperbesar.
+        """
+        w, h = 1080, 1920
+        out_path = os.path.join(output_dir, f"{base_name}.thumb.jpg")
+        tmp_path = os.path.join(output_dir, f"{base_name}.thumb.rendering.jpg")
+        shade_path = os.path.join(output_dir, f"{base_name}.thumbshade.png")
+        ass_name = f"{base_name}.thumb.ass"
+        graph_path = os.path.join(output_dir, f"{base_name}.thumb.filter.txt")
+        try:
+            if use_layout:
+                layout_path = os.path.join(output_dir, f"{base_name}.layout.json")
+                graph, _ = self._layout_for(video_path, start_sec, end_sec, w, h, options, layout_path, None)
+                sharpen = w > _probe(video_path)[1] * 9 / 16 * 1.3
+                graph += f";[vlayout]{'unsharp=5:5:0.6:5:5:0' if sharpen else 'null'}[vbase]"
+                inputs = ["-ss", f"{start_sec:.3f}", "-i", video_path]
+            else:
+                graph = f"[0:v]scale={w}:{h}:flags=lanczos,unsharp=5:5:0.6:5:5:0[vbase]"
+                inputs = ["-i", video_path]
+            label = "vbase"
+            if clip_effects.write_shade_png(thumbnail.SHADE, w, h, shade_path):
+                inputs += ["-i", shade_path]
+                graph += f";[{label}][1:v]overlay=format=auto[vshade]"
+                label = "vshade"
+            # Durasi panjang agar teks tidak sedang memudar pada detik `at`
+            text = clip_effects.hook_ass(hook, at + 10, FONTS.get(hook.get('font'), FONTS["montserrat"]))
+            if text:
+                with open(os.path.join(output_dir, ass_name), "w", encoding="utf-8") as f:
+                    f.write(text)
+                graph += f";[{label}]ass={ass_name}:fontsdir={_fonts_dir_for(output_dir)}[vout]"
+            else:
+                graph += f";[{label}]null[vout]"
+            with open(graph_path, "w", encoding="utf-8") as f:
+                f.write(graph)
+            _run_ffmpeg(["ffmpeg", "-y", *inputs, "-/filter_complex", os.path.basename(graph_path), "-map", "[vout]",
+                         "-ss", f"{at:.3f}", "-frames:v", "1", "-q:v", "2", tmp_path],
+                        "Gagal membuat thumbnail", cwd=output_dir)
+            os.replace(tmp_path, out_path)
+        finally:
+            for path in (tmp_path, shade_path, os.path.join(output_dir, ass_name), graph_path):
+                _remove_quietly(path)
+        return out_path
+
     def process_clip(self, video_path: str, segment: dict, options: dict, callback=None) -> dict:
         """
         Render satu klip dengan FFmpeg.
@@ -237,6 +285,7 @@ class RenderPipeline:
         graph_path = os.path.join(output_dir, f"{base_name}.filter.txt")
         words_path = os.path.join(output_dir, f"{base_name}.words.json")
         shade_path = os.path.join(output_dir, f"{base_name}.shade.png")
+        hook_shade_path = os.path.join(output_dir, f"{base_name}.hookshade.png")
         layout_path = os.path.join(output_dir, f"{base_name}.layout.json")
         assets_dir = options.get('assets_dir') or ''
 
@@ -293,10 +342,18 @@ class RenderPipeline:
                 graph += f";[{label}][{len(extra_inputs)}:v]overlay=format=auto[vshade]"
                 label = "vshade"
 
+            # Bayangan bawah selama hook tampil, di bawah caption & teks hook
+            hook = edit.get('hook') or {}
+            hook_shade = clip_effects.hook_shade(hook)
+            if hook_shade and clip_effects.write_shade_png(hook_shade, target_w, target_h, hook_shade_path):
+                hook_end = clip_effects.hook_end(hook, duration)
+                extra_inputs.append(["-loop", "1", "-framerate", "30", "-t", f"{hook_end:.3f}", "-i", hook_shade_path])
+                graph += ";" + clip_effects.hook_shade_filter(len(extra_inputs), label, "vhookshade", hook_end, duration)
+                label = "vhookshade"
+
             logo_path = self._asset_path(assets_dir, (marks.get('logo') or {}).get('asset'))
             layout = clip_effects.marks_layout(marks, self._image_aspect(logo_path))
             steps = [f for f in (clip_effects.vignette_filter(vignette), ass_filter) if f]
-            hook = edit.get('hook') or {}
             hook_text = clip_effects.hook_ass(hook, duration, FONTS.get(hook.get('font'), FONTS["montserrat"])) if hook else None
             if hook_text:
                 hook_name = f"{base_name}.hook.ass"
@@ -361,6 +418,7 @@ class RenderPipeline:
             _remove_quietly(temp_output_path)
             _remove_quietly(graph_path)
             _remove_quietly(shade_path)
+            _remove_quietly(hook_shade_path)
 
         if callback: callback({'status': 'done', 'progress': 100, 'output': final_output_path})
 

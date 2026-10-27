@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { Check, ChevronDown, Copy, Play } from 'lucide-react'
 import { ScoreBreakdown, Segment } from '@/lib/types'
 import { angleOf, emotionOf, formatSpan, toSeconds } from '@/lib/clip-meta'
+import { CATEGORY_LABELS, type Fit } from '@/lib/niche'
 import ScoreMeter from './ScoreMeter'
 
 interface Props {
@@ -16,6 +17,7 @@ interface Props {
   /** URL klip hasil render jika momen ini sudah pernah dirender */
   /** Link ke editor klip, jika momen ini sudah punya pratinjau/klip */
   editHref?: string
+  fit?: Fit
 }
 
 const HOOK_LABELS: Record<string, string> = {
@@ -99,7 +101,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 /** Satu momen hasil analisis: baris ringkas yang bisa dibuka untuk melihat hook & caption. */
-export default function SegmentCard({ segment: seg, isBest, isOpen, onToggle, onPlayClip, editHref }: Props) {
+export default function SegmentCard({ segment: seg, isBest, isOpen, onToggle, onPlayClip, editHref, fit }: Props) {
   const angle = angleOf(seg.content_angle)
   const emotion = emotionOf(seg.emotion_trigger)
   const length = toSeconds(seg.end_time) - toSeconds(seg.start_time)
@@ -132,6 +134,9 @@ export default function SegmentCard({ segment: seg, isBest, isOpen, onToggle, on
           <span className="mt-1 block text-xs text-ink-muted">
             <span style={{ color: angle.color }}>{angle.label}</span>
             {emotion && <>, {emotion}</>}
+            {seg.category && <>, {CATEGORY_LABELS[seg.category] ?? seg.category}</>}
+            {fit === 'selingan' && <span className="text-label-iris">, selingan</span>}
+            {fit === 'luar' && <span className="text-ink-faint">, di luar niche</span>}
             {editHref && <span className="text-sage">, klip tersimpan</span>}
           </span>
         </span>

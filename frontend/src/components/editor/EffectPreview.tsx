@@ -29,6 +29,27 @@ function vignetteBackground(v: EditRecipe['vignette']): string {
   return `radial-gradient(ellipse at center, transparent ${70 - v.strength * 0.4}%, rgb(0 0 0 / ${0.35 + v.strength * 0.005}) 100%)`
 }
 
+// Sama dengan HOOK_SHADE_* di backend/clip_effects.py
+const HOOK_SHADE_HEIGHT = 70
+const HOOK_SHADE_OUT = 0.5
+
+/** Bayangan bawah yang tampil bersama hook lalu memudar (hook_shade_filter di backend). */
+export function HookShade({ hook, time, end, clipEnd }: {
+  hook: EditRecipe['hook']
+  /** Detik sejak awal klip; Infinity = tampil penuh (saat hook sedang diatur) */
+  time: number
+  end: number
+  clipEnd: number
+}) {
+  if (!hook.enabled || !hook.text.trim() || hook.shade <= 0 || time < 0 || time >= end) return null
+  // Langsung tampil, memudar bersama teks hook
+  const opacity = !Number.isFinite(time) || end >= clipEnd ? 1 : Math.min(1, (end - time) / HOOK_SHADE_OUT)
+  return (
+    <div className="pointer-events-none absolute inset-0" aria-hidden
+      style={{ opacity, background: vignetteBackground({ shape: 'bottom', strength: hook.shade, height: HOOK_SHADE_HEIGHT }) }} />
+  )
+}
+
 export function VignettePreview({ vignette }: { vignette: EditRecipe['vignette'] }) {
   if (vignette.strength <= 0) return null
   return <div className="pointer-events-none absolute inset-0" style={{ background: vignetteBackground(vignette) }} aria-hidden />

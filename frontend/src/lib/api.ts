@@ -1,5 +1,5 @@
 import {
-  AnalysisResult, ClipGenerateOptions, EditRecipe, EditTemplate, EditorAsset, EditorData, Me, RenderJob, RenderOptions, RenderedClip, Segment,
+  AnalysisResult, ClipGenerateOptions, ClipThumbnail, EditRecipe, EditTemplate, EditorAsset, EditorData, Me, NicheSetting, RenderJob, RenderOptions, RenderedClip, Segment,
   TranscriptSegment, UploadedFileInfo, VideoDetail, VideoSummary,
 } from '@/lib/types'
 import { accessToken } from '@/lib/supabase'
@@ -50,6 +50,13 @@ export const saveGeminiKey = (apiKey: string) =>
   })
 
 export const deleteGeminiKey = () => request<Me>('/me/gemini-key', { method: 'DELETE' })
+
+export const saveNiche = (niche: NicheSetting) =>
+  request<Me>('/me/niche', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(niche),
+  })
 
 export const deleteAccount = () => request<{ message: string }>('/me', { method: 'DELETE' })
 
@@ -134,6 +141,25 @@ export const saveTemplate = (name: string, edit: EditRecipe, options: RenderOpti
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, edit, options, source_auto: sourceAuto }),
   }).then(r => r.template)
+
+/** Buat thumbnail klip. at = detik video sumber (null = frame dengan wajah paling jelas). */
+export const createThumbnail = (videoId: string, key: string, text: string, at: number | null,
+  hook: Pick<EditRecipe['hook'], 'style' | 'accent' | 'font'>) =>
+  request<{ thumbnail: ClipThumbnail }>(`/videos/${encodeURIComponent(videoId)}/thumbnail`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, text, at, hook }),
+  }).then(r => r.thumbnail)
+
+export const getTemplates = () => request<{ templates: EditTemplate[] }>('/edit-templates').then(r => r.templates)
+
+/** Render final semua klip satu video dengan satu format edit (satu job). */
+export const renderAll = (videoId: string, templateId: string) =>
+  request<{ job: RenderJob }>(`/videos/${encodeURIComponent(videoId)}/render-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ template_id: templateId }),
+  }).then(r => r.job)
 
 export const deleteTemplate = (id: string) =>
   request<{ message: string }>(`/edit-templates/${encodeURIComponent(id)}`, { method: 'DELETE' })

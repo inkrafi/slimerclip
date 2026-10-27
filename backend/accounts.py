@@ -7,6 +7,7 @@ hanya bisa diakses backend ini, bukan langsung dari browser.
 
 Mode lokal: tidak ada database; admin lokal tanpa kuota, pustaka = semua video di cache.
 """
+import json
 import os
 from datetime import datetime, timezone
 
@@ -97,6 +98,18 @@ class SupabaseAccounts:
         self._req("PATCH", f"{self.rest}/profiles", params={"id": f"eq.{user_id}"}, prefer="return=minimal",
                   json={"gemini_key_enc": encrypt_key(api_key) if api_key else None, "gemini_key_hint": hint})
 
+    def niche(self, user_id: str) -> dict | None:
+        """Niche channel; None jika belum diatur (atau migrasi 0003_niche belum dijalankan)."""
+        try:
+            rows = self._req("GET", f"{self.rest}/profiles", params={"id": f"eq.{user_id}", "select": "niche"}).json()
+        except AccountsError:
+            return None
+        return rows[0].get("niche") if rows else None
+
+    def set_niche(self, user_id: str, niche: dict):
+        self._req("PATCH", f"{self.rest}/profiles", params={"id": f"eq.{user_id}"}, prefer="return=minimal",
+                  json={"niche": niche})
+
     # ── Pustaka video ──
     def add_video(self, user_id: str, video_id: str):
         self._req("POST", f"{self.rest}/user_videos?on_conflict=user_id,video_id",
@@ -142,7 +155,24 @@ class SupabaseAccounts:
 
 
 class LocalAccounts:
-    """Mode lokal: satu admin tanpa kuota dan tanpa database."""
+    """Mode lokal: satu admin tanpa kuota dan tanpa database (pengaturan niche disimpan di file)."""
+
+    PROFILE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "local_profile.json")
+
+    def _settings(self) -> dict:
+        try:
+            with open(self.PROFILE_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def niche(self, user_id):
+        return self._settings().get("niche")
+
+    def set_niche(self, user_id, niche):
+        os.makedirs(os.path.dirname(self.PROFILE_FILE), exist_ok=True)
+        with open(self.PROFILE_FILE, "w", encoding="utf-8") as f:
+            json.dump({**self._settings(), "niche": niche}, f, ensure_ascii=False, indent=2)
 
     def profile(self, user: User) -> dict:
         return {"free_analyses_used": 0, "gemini_key_enc": None, "gemini_key_hint": None}

@@ -29,6 +29,8 @@ export interface Segment {
   score_breakdown?: ScoreBreakdown
   speaker_quote?: string
   content_angle?: string
+  /** Topik utama (backend/niche.py); tidak ada di analisis lama */
+  category?: string
   hooks: Hooks
   caption_suggestion: string
 }
@@ -90,10 +92,21 @@ export interface UploadedFileInfo {
 }
 
 /** Klip yang sudah dirender dan tersimpan di backend (clips/<id>/manifest.json). */
+export interface UploadKit {
+  titles: string[]
+  description: string
+  hashtags: string[]
+  /** Deskripsi + hashtag, siap tempel di kolom deskripsi */
+  description_full: string
+}
+
 export interface RenderedClip {
   key: string
   /** Judul klip (nama file unduhan): diedit pengguna atau saran dari analisis */
   title?: string
+  thumbnail_url?: string | null
+  /** Judul, deskripsi & hashtag siap salin ke YouTube Studio (tidak ada untuk klip lama) */
+  upload?: UploadKit
   /** null untuk klip lama yang dibuat sebelum ada pencatatan (rentang waktunya tidak diketahui) */
   start_time: string | null
   end_time: string | null
@@ -124,6 +137,8 @@ export interface VideoDetail {
   analysis: AnalysisResult | null
   analyzing: boolean
   clips: RenderedClip[]
+  /** Unduh semua klip final sebagai ZIP (ada jika minimal 2 klip final) */
+  zip_url: string | null
   upload: UploadedFileInfo | null
 }
 
@@ -163,6 +178,13 @@ export interface RenderJob {
   segments: Record<string, RenderJobSegment>
 }
 
+/** Niche channel: topik kosong = semua momen ditampilkan */
+export interface NicheSetting {
+  topics: string[]
+  /** Momen lucu ikut ditampilkan sebagai selingan */
+  comedy: boolean
+}
+
 /** Akun yang sedang login (GET /me). Batas bernilai null = tanpa batas (admin). */
 export interface Me {
   id: string
@@ -173,6 +195,7 @@ export interface Me {
   auth_enabled: boolean
   has_gemini_key: boolean
   gemini_key_hint: string | null
+  niche: NicheSetting
   free_analyses_limit: number | null
   free_analyses_left: number | null
   render_daily_limit: number | null
@@ -211,7 +234,7 @@ export interface EditRecipe {
 }
 
 export type HookStyle = 'spotlight' | 'tape' | 'poster' | 'light' | 'dark' | 'outline'
-export type HookAnim = 'pop' | 'slide' | 'type' | 'fade'
+export type HookAnim = 'cut' | 'pop' | 'slide' | 'type' | 'fade'
 export type HookAccent = 'pink' | 'yellow' | 'lime' | 'cyan' | 'white'
 
 /**
@@ -229,6 +252,8 @@ export interface HookSettings {
   font: CaptionStyle['font']
   size: number
   position_y: number
+  /** Kekuatan bayangan bawah selama hook tampil (0 = mati); memudar saat hook hilang */
+  shade: number
 }
 
 export interface TranscriptWord { start: number; end: number; word: string }
@@ -260,9 +285,19 @@ export interface EditorData {
   /** Sisa jatah render final hari ini; null = tanpa batas */
   final_left: number | null
   hook_suggestions: string[]
+  thumbnail: ClipThumbnail | null
+  /** Teks thumbnail saran dari analisis (atau ide hook pertama) */
+  thumbnail_suggestion: string
   sfx_library: { name: string; label: string; url: string }[]
   assets: EditorAsset[]
   templates: EditTemplate[]
+}
+
+/** Thumbnail klip (JPG 1080×1920). at = detik video sumber frame-nya. */
+export interface ClipThumbnail {
+  url: string
+  text: string
+  at: number | null
 }
 
 /** Format edit tersimpan: tampilan klip (tanpa rentang, teks hook & efek suara) + pengaturan caption & render. */

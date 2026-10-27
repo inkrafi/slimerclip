@@ -1,6 +1,9 @@
 import io
+import json
+import os
 import time
 import uuid
+import zipfile
 
 import cv2
 import jwt
@@ -35,6 +38,12 @@ class FakeAccounts:
         p = self.profiles[user_id]
         p["gemini_key_enc"] = accounts_module.encrypt_key(api_key) if api_key else None
         p["gemini_key_hint"] = api_key[-4:] if api_key else None
+
+    def niche(self, user_id):
+        return self.profiles.get(user_id, {}).get("niche")
+
+    def set_niche(self, user_id, niche):
+        self.profiles[user_id]["niche"] = niche
 
     def add_video(self, user_id, video_id):
         self.videos.setdefault(user_id, {}).setdefault(video_id, time.time())
@@ -420,3 +429,98 @@ def test_clip_title_and_download_name(env):
     A._record_clip(str(folder), {"start_time": "00:01", "end_time": "00:05", "topic": "x"},
                    str(folder / f"{VIDEO_ID}_1-5.mp4"), {"resolution": "1080", "range": [1.0, 5.0]})
     assert c.get(f"/videos/{VIDEO_ID}/editor?key=00:01-00:05", headers=admin).json["clip"]["title"].startswith("Cerita Hesti")
+
+
+def test_render_all_with_template_and_zip(env, monkeypatch):
+    c = env["client"]
+    monkeypatch.setattr(A.clip_effects, "ASSETS_ROOT", str(env["tmp"] / "assets"))
+    started = []
+    monkeypatch.setattr(A, "_run_render_job", lambda *args: started.append(args))
+    admin = token("admin@example.com")
+    assert c.post("/analyze", headers=admin, json={"youtube_url": URL}).status_code == 200
+    folder = _preview_clip(env, "admin@example.com")
+    _preview_clip(env, "admin@example.com", "00:06", "00:09")
+    # Klip kedua sudah punya teks hook sendiri: teksnya dipertahankan, gayanya dari format
+    manifest = A._load_manifest(str(folder))
+    manifest["clips"]["00:06-00:09"]["edit"] = {"hook": {"enabled": True, "text": "Kenapa *nolak*?", "style": "outline"}}
+    (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    template = c.post("/edit-templates", headers=admin, json={
+        "name": "Podcast", "source_auto": True, "options": {"resolution": "1080"},
+        "edit": {"vignette": {"shape": "bottom", "strength": 50}, "hook": {"enabled": True, "style": "tape", "shade": 40},
+                 "marks": {"source": {"enabled": True, "text": "lama"}}},
+    }).json["template"]
+    assert c.post(f"/videos/{VIDEO_ID}/render-all", headers=admin, json={"template_id": "zzz"}).status_code == 404
+
+    res = c.post(f"/videos/{VIDEO_ID}/render-all", headers=admin, json={"template_id": template["id"]})
+    assert res.status_code == 202 and len(res.json["job"]["segments"]) == 2
+    _, _, _, segments, options, *_ = started[0]
+    assert options["resolution"] == "1080" and options["mode"] == "final"
+    edits = {s["start_time"]: s["options"]["edit"] for s in segments}
+    assert edits["00:06"]["hook"] == {**edits["00:06"]["hook"], "text": "Kenapa *nolak*?", "style": "tape", "shade": 40, "enabled": True}
+    assert edits["00:01"]["hook"]["enabled"] is False  # tanpa teks hook / ide hook
+    assert edits["00:01"]["vignette"]["strength"] == 50 and edits["00:01"]["marks"]["source"]["text"] == "Sumber: YouTube"
+    assert len({s["segment_number"] for s in segments}) == 2
+    # Semua sedang antre → tidak bisa dirender lagi
+    assert c.post(f"/videos/{VIDEO_ID}/render-all", headers=admin, json={"template_id": template["id"]}).status_code == 409
+
+    # ZIP: muncul setelah ada ≥ 2 klip final, nama file dari judul klip
+    assert c.get(f"/videos/{VIDEO_ID}", headers=admin).json["zip_url"] is None
+    for start, end, title in (("00:01", "00:05", "Cerita bisnis"), ("00:06", "00:09", "Cerita bisnis")):
+        make_video(folder / f"{start[-2:]}.mp4", 1)
+        A._record_clip(str(folder), {"start_time": start, "end_time": end, "short_title": title},
+                       str(folder / f"{start[-2:]}.mp4"), {"resolution": "1080", "range": [1.0, 5.0]})
+    url = c.get(f"/videos/{VIDEO_ID}", headers=admin).json["zip_url"]
+    assert c.get(f"/clips-zip/{VIDEO_ID}?t=palsu").status_code == 404
+    res = c.get("/" + url.split("://", 1)[1].split("/", 1)[1])
+    assert res.status_code == 200 and "Tes.zip" in res.headers["Content-Disposition"]
+    with zipfile.ZipFile(io.BytesIO(res.data)) as archive:
+        assert sorted(archive.namelist()) == ["Cerita bisnis (2).mp4", "Cerita bisnis.mp4"]
+    res.close()
+
+
+def test_thumbnail_create_and_download(env, monkeypatch):
+    c = env["client"]
+    admin = token("admin@example.com")
+    folder = _preview_clip(env, "admin@example.com")
+    calls = []
+
+    def fake_render(video_path, start, end, at, options, output_dir, base_name, hook, use_layout=True):
+        calls.append({"at": at, "hook": hook, "use_layout": use_layout})
+        path = os.path.join(output_dir, f"{base_name}.thumb.jpg")
+        open(path, "wb").write(b"\xff\xd8jpg")
+        return path
+
+    monkeypatch.setattr(A.render_pipeline, "render_thumbnail", fake_render)
+    monkeypatch.setattr(A.thumbnail, "best_frame_time", lambda path, duration: 2.5)
+    res = c.post(f"/videos/{VIDEO_ID}/thumbnail", headers=admin,
+                 json={"key": "00:01-00:05", "text": "Ditolak\n*1 MILIAR*{\b0}", "hook": {"style": "poster", "accent": "yellow"}})
+    assert res.status_code == 200
+    thumb = res.json["thumbnail"]
+    assert thumb["text"] == "Ditolak\n*1 MILIAR*\b0".replace("\\", "") and thumb["at"] == 3.5  # 1.0 + 2.5 (otomatis)
+    hook = calls[0]["hook"]
+    assert hook["style"] == "poster" and hook["accent"] == "yellow" and hook["anim"] == "cut" and hook["size"] >= 130
+    # Tanpa video sumber → pratinjau diperbesar
+    assert calls[0]["use_layout"] is False
+    # Detik pilihan (detik video sumber) → relatif awal pratinjau
+    c.post(f"/videos/{VIDEO_ID}/thumbnail", headers=admin, json={"key": "00:01-00:05", "text": "x", "at": 4.0})
+    assert calls[1]["at"] == 3.0
+
+    data = c.get(f"/videos/{VIDEO_ID}/editor?key=00:01-00:05", headers=admin).json
+    assert data["thumbnail"]["url"] and data["thumbnail"]["text"] == "x"
+    path = data["thumbnail"]["url"].split("://", 1)[1].split("/", 1)[1]
+    disposition = c.get("/" + path + "&download=1").headers["Content-Disposition"]
+    assert ".jpg" in disposition and ".mp4" not in disposition
+    listed = c.get(f"/videos/{VIDEO_ID}/clips", headers=admin).json["clips"][0]
+    assert listed["thumbnail_url"]
+    # Kit upload: judul klip jadi opsi pertama, deskripsi + hashtag siap tempel
+    assert listed["upload"]["titles"][0] == listed["title"] and listed["upload"]["hashtags"]
+    assert listed["upload"]["description_full"].endswith(" ".join(listed["upload"]["hashtags"]))
+
+
+def test_niche_setting(env):
+    c, h = env["client"], token("niche@example.com")
+    assert c.get("/me", headers=h).json["niche"] == {"topics": [], "comedy": True}   # default: semua topik
+    res = c.put("/me/niche", headers=h, json={"topics": ["investasi", "bisnis", "komedi", "../x"], "comedy": False})
+    assert res.status_code == 200 and res.json["niche"] == {"topics": ["bisnis", "investasi"], "comedy": False}
+    assert c.get("/me", headers=h).json["niche"]["topics"] == ["bisnis", "investasi"]

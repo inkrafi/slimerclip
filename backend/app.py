@@ -5,8 +5,10 @@ import re
 import time
 import threading
 import uuid
+import tempfile
+import zipfile
 # pyrefly: ignore [missing-import]
-from flask import Flask, request, jsonify, send_from_directory, abort
+from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 from flask_cors import CORS
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -16,6 +18,9 @@ load_dotenv()  # sebelum membaca CORS_ORIGINS / FLASK_DEBUG / SUPABASE_URL
 from auth import AUTH_ENABLED, User, current_user, derived_key
 from caption_styles import sanitize_caption_style
 import clip_effects
+import thumbnail
+import upload_kit
+import niche
 from accounts import (FREE_ANALYSES, PREVIEW_DAILY_LIMIT, RENDER_DAILY_LIMIT, SERVER_KEY_DAILY_CAP, AccountsError, accounts,
                       decrypt_key)
 from gemini_service import analyze_youtube_video, validate_api_key
@@ -83,7 +88,7 @@ ALLOWED_ORIGINS = [o.strip() for o in os.getenv(
 # Mode lokal: host yang boleh dipakai untuk mengakses backend (mencegah DNS rebinding)
 ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 # Endpoint tanpa login (klip dilindungi token di URL-nya)
-PUBLIC_ENDPOINTS = {"health_check", "serve_clip", "serve_asset", "serve_sfx", "static"}
+PUBLIC_ENDPOINTS = {"health_check", "serve_clip", "serve_clips_zip", "serve_asset", "serve_sfx", "static"}
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ALLOWED_RESOLUTIONS = {"720", "1080", "2160"}  # sisi pendek video 9:16; 2160 = 4K
@@ -319,15 +324,20 @@ def _list_clips(user: User, video_id: str, base: str) -> list:
             continue
         recorded.update(os.path.basename(f) for f in (final, preview) if f)
         shown = final or preview
+        segment = _analysis_segment(video_id, entry)
+        title = _clip_title(video_id, entry)
         clips.append({
             **entry,
-            "title": _clip_title(video_id, entry),
+            "title": title,
+            "viral_score": entry.get("viral_score") if entry.get("viral_score") is not None else segment.get("viral_score"),
+            "upload": upload_kit.build(segment, title, _hook_suggestions(video_id, entry), entry.get("topic", "")),
             "legacy": False,
             # Klip final bisa diunduh; pratinjau (tanpa caption) hanya untuk diedit
             "status": "final" if final else "preview",
             "url": _clip_url(base, user, video_id, entry["filename"], int(os.path.getmtime(final))) if final else None,
             "preview_url": (_clip_url(base, user, video_id, entry["preview_filename"], int(os.path.getmtime(preview)))
                             if preview else None),
+            "thumbnail_url": (_thumbnail_info(base, user, video_id, folder, entry) or {}).get("url"),
             "file_size_mb": round(os.path.getsize(shown) / (1024 * 1024), 1),
             "rendered_at": entry.get("updated_at") or entry.get("rendered_at"),
         })
@@ -511,6 +521,7 @@ def _me_payload(user: User) -> dict:
         "auth_enabled": AUTH_ENABLED,
         "has_gemini_key": bool(profile.get("gemini_key_enc")),
         "gemini_key_hint": profile.get("gemini_key_hint"),
+        "niche": niche.sanitize_niche(accounts.niche(user.id)),
         # Batas hanya untuk pengguna biasa; null = tanpa batas
         "free_analyses_limit": None,
         "free_analyses_left": None,
@@ -566,6 +577,21 @@ def me_delete_gemini_key():
     if not AUTH_ENABLED:
         raise ApiError(400, "Mode lokal memakai GEMINI_API_KEY di backend/.env.")
     accounts.set_gemini_key(user.id, None)
+    return jsonify(_me_payload(user))
+
+
+@app.route("/me/niche", methods=["PUT"])
+def me_set_niche():
+    """Niche channel: kategori momen yang ditampilkan (kosong = semua) dan momen lucu sebagai selingan."""
+    user = _user()
+    value = niche.sanitize_niche(request.get_json(silent=True))
+    accounts.profile(user)  # pastikan baris profil ada
+    try:
+        accounts.set_niche(user.id, value)
+    except AccountsError as e:
+        print(f"[Accounts] Gagal menyimpan niche: {e}")
+        raise ApiError(503, "Pengaturan niche belum bisa disimpan. Admin: jalankan supabase/migrations/0003_niche.sql.",
+                       "niche_unavailable")
     return jsonify(_me_payload(user))
 
 
@@ -628,8 +654,27 @@ def video_detail(video_id):
         "analysis": analysis,
         "analyzing": video_id in _analysis_inflight,
         "clips": _list_clips(user, video_id, _public_base()),
+        "zip_url": _clips_zip_url(user, video_id, _public_base()),
         "upload": _latest_upload(user, video_id),
     })
+
+
+def _final_clips(folder: str) -> list:
+    """(entri manifest, path file) klip final yang filenya masih ada."""
+    items = []
+    for entry in _load_manifest(folder)["clips"].values():
+        path = entry.get("filename") and os.path.join(folder, entry["filename"])
+        if path and os.path.isfile(path):
+            items.append((entry, path))
+    return items
+
+
+def _clips_zip_url(user: User, video_id: str, base: str) -> str | None:
+    finals = _final_clips(_clips_dir(user, video_id))
+    if len(finals) < 2:
+        return None
+    version = int(max(os.path.getmtime(path) for _, path in finals))
+    return _signed_media_url(base, f"clips-zip/{video_id}", [user.storage_key, video_id, "zip"], version)
 
 
 @app.route("/videos/<video_id>/clips", methods=["GET"])
@@ -1001,6 +1046,7 @@ def _run_render_job(job_id, user, video_id, segments, options, local_video_path,
             failed = 0
             for seg in segments:
                 n = seg["segment_number"]
+                seg_options = {**options, **(seg.get("options") or {})}
                 jobs.update_segment(job_id, n, status="cutting", progress=0)
 
                 def render_cb(msg, n=n):
@@ -1008,7 +1054,7 @@ def _run_render_job(job_id, user, video_id, segments, options, local_video_path,
                         jobs.update_segment(job_id, n, status=msg["status"], progress=msg.get("progress", 0))
 
                 try:
-                    result = render_pipeline.process_clip(video_path, seg, options, callback=render_cb)
+                    result = render_pipeline.process_clip(video_path, seg, seg_options, callback=render_cb)
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
@@ -1019,8 +1065,8 @@ def _run_render_job(job_id, user, video_id, segments, options, local_video_path,
                 filename = os.path.basename(result["output_path"])
                 url = _clip_url(base, user, video_id, filename, int(time.time()))
                 try:
-                    _record_clip(options["output_dir"], seg, result["output_path"],
-                                 {**options, "layout_summary": result.get("layout"), "range": result.get("range"),
+                    _record_clip(seg_options["output_dir"], seg, result["output_path"],
+                                 {**seg_options, "layout_summary": result.get("layout"), "range": result.get("range"),
                                   "mode": result.get("mode")})
                 except OSError as e:
                     print(f"[Manifest] Gagal mencatat klip: {e}")
@@ -1273,6 +1319,21 @@ def _clip_title(video_id: str, entry: dict) -> str:
             or clip_effects.suggested_title({**entry, **_analysis_segment(video_id, entry)}))
 
 
+def _thumbnail_info(base: str, user: User, video_id: str, folder: str, entry: dict) -> dict | None:
+    thumb = entry.get("thumbnail") or {}
+    path = thumb.get("filename") and os.path.join(folder, thumb["filename"])
+    if not path or not os.path.isfile(path):
+        return None
+    return {"url": _clip_url(base, user, video_id, thumb["filename"], int(os.path.getmtime(path))),
+            "text": thumb.get("text", ""), "at": thumb.get("at")}
+
+
+def _thumbnail_suggestion(video_id: str, entry: dict) -> str:
+    """Teks thumbnail saran: dari analisis (thumbnail_text), atau ide hook pertama."""
+    segment = _analysis_segment(video_id, entry)
+    return thumbnail.clean_text(segment.get("thumbnail_text") or next(iter(_hook_suggestions(video_id, entry)), ""))
+
+
 def _hook_suggestions(video_id: str, entry: dict) -> list:
     """Ide teks hook dari hasil analisis momen ini (pertanyaan, pernyataan, teaser)."""
     hooks = _analysis_segment(video_id, entry).get("hooks") or {}
@@ -1333,6 +1394,8 @@ def editor_get(video_id):
         "source_ready": bool(source_path or source_url),
         "final_left": _final_left(user),
         "hook_suggestions": _hook_suggestions(video_id, entry),
+        "thumbnail": _thumbnail_info(base, user, video_id, folder, entry),
+        "thumbnail_suggestion": _thumbnail_suggestion(video_id, entry),
         "sfx_library": [{"name": n, "label": label, "url": f"{base}sfx/{n}"} for n, label in clip_effects.SFX_LIBRARY.items()],
         "assets": _list_assets(user, base),
         "templates": _load_templates(user),
@@ -1408,6 +1471,174 @@ def clip_title_save(video_id):
     return jsonify({"title": _clip_title(video_id, entry)})
 
 
+@app.route("/videos/<video_id>/thumbnail", methods=["POST"])
+def thumbnail_create(video_id):
+    """
+    Buat thumbnail klip (JPG 1080x1920): frame dengan wajah paling jelas (atau detik pilihan),
+    bayangan bawah, dan teks besar bergaya hook. Tidak memakai jatah render.
+    """
+    user = _user()
+    data = request.get_json(silent=True) or {}
+    folder, entry = _editor_clip(user, video_id, data.get("key"))
+    text = thumbnail.clean_text(data.get("text"))
+    raw_hook = data.get("hook") if isinstance(data.get("hook"), dict) else {}
+    hook = clip_effects.sanitize_edit({"hook": {**raw_hook, "enabled": True, "text": text or "x"}}, 0, 60)["hook"]
+
+    # Frame dipilih dari pratinjau (bersih, tanpa caption); klip lama tanpa pratinjau → klip final
+    preview = entry.get("preview_filename") and os.path.join(folder, entry["preview_filename"])
+    final = entry.get("filename") and os.path.join(folder, entry["filename"])
+    if preview and os.path.isfile(preview):
+        clip_file, clip_range = preview, entry.get("preview_range")
+        layout_options = entry.get("render_options") or {}
+    else:
+        clip_file, clip_range = final, entry.get("range")
+        layout_options = entry.get("final_options") or entry.get("render_options") or {}
+    clip_range = clip_range or [render_pipeline._time_to_seconds(entry["start_time"]),
+                                render_pipeline._time_to_seconds(entry["end_time"])]
+    duration = clip_range[1] - clip_range[0]
+    at = data.get("at")
+    if isinstance(at, (int, float)) and not isinstance(at, bool):
+        rel = min(max(0.0, float(at) - clip_range[0]), max(0.0, duration - 0.05))
+    else:
+        try:
+            rel = thumbnail.best_frame_time(clip_file, duration)
+        except Exception as e:
+            print(f"[Thumbnail] Gagal memilih frame: {e}")
+            rel = min(1.0, duration / 2)
+
+    # Gambar tajam dari video sumber; tanpa sumber → pratinjau diperbesar
+    source_path, _ = _editor_source(user, video_id)
+    if not source_path and clip_file != preview:
+        raise ApiError(400, "Video sumber tidak ditemukan. Upload videonya lagi di halaman video.", "no_source")
+    try:
+        path = render_pipeline.render_thumbnail(
+            source_path or clip_file, clip_range[0], clip_range[1], rel, _sanitize_options(layout_options),
+            folder, _entry_base(entry), thumbnail.thumbnail_hook(hook, text), use_layout=bool(source_path))
+    except Exception as e:
+        print(f"[Thumbnail] {e}")
+        raise ApiError(500, "Thumbnail gagal dibuat. Coba lagi atau pilih frame lain.")
+
+    with _manifest_lock:
+        manifest = _load_manifest(folder)
+        entry = manifest["clips"][entry["key"]]
+        entry["thumbnail"] = {"filename": os.path.basename(path), "text": text, "at": round(clip_range[0] + rel, 2)}
+        manifest_path = _manifest_path(folder)
+        with open(manifest_path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        os.replace(manifest_path + ".tmp", manifest_path)
+    return jsonify({"thumbnail": _thumbnail_info(_public_base(), user, video_id, folder, entry)})
+
+
+@app.route("/videos/<video_id>/render-all", methods=["POST"])
+def render_all(video_id):
+    """
+    Render final banyak klip sekaligus dengan satu format edit (satu job, dirender bergantian).
+    Rentang, teks hook (atau ide hook pertama), teks caption, dan efek suara tiap klip tetap.
+    """
+    user = _user()
+    if not _is_safe_id(video_id):
+        raise ApiError(400, "video_id tidak valid.")
+    data = request.get_json(silent=True) or {}
+    template = next((t for t in _load_templates(user) if t.get("id") == data.get("template_id")), None)
+    if not template:
+        raise ApiError(404, "Format edit tidak ditemukan. Simpan format edit dulu di editor klip.", "template_not_found")
+
+    folder = _clips_dir(user, video_id)
+    wanted = {k for k in data["keys"] if isinstance(k, str)} if isinstance(data.get("keys"), list) else None
+    busy = {key for _, key in jobs.active_keys(user.id, video_id)}
+    entries = [e for e in _load_manifest(folder)["clips"].values()
+               if (wanted is None or e.get("key") in wanted)
+               and any(e.get(k) and os.path.isfile(os.path.join(folder, e[k])) for k in ("filename", "preview_filename"))]
+    entries = [e for e in entries if e.get("key") not in busy]
+    if not entries:
+        raise ApiError(409, "Tidak ada klip yang bisa dirender: semua sedang dirender atau belum dibuat pratinjaunya.", "busy")
+    left = _final_left(user)
+    if left is not None and len(entries) > left:
+        raise ApiError(429, f"Sisa jatah render final hari ini {left} klip, padahal ada {len(entries)} klip. "
+                            "Render sebagian lewat editor, atau coba lagi besok.", "render_quota")
+    source_path, youtube_url = _editor_source(user, video_id)
+    if not source_path and not youtube_url:
+        raise ApiError(400, "Video sumber tidak ditemukan. Upload videonya lagi di halaman video.", "no_source")
+
+    meta = (_get_cached_analysis(video_id) or {}).get("video_metadata") or {}
+    assets_dir = _assets_dir(user)
+    channel = meta.get("channel")
+    source_text = (f"Sumber: {channel} (YouTube)" if channel else "Sumber: YouTube") if template.get("source_auto") else None
+    style = clip_effects.template_style(template.get("edit"))
+    options = _sanitize_options(template.get("options"))
+    options.update({"video_id": video_id, "output_dir": folder, "assets_dir": assets_dir, "mode": "final"})
+
+    numbers = [e.get("segment_number") for e in entries]
+    unique = all(isinstance(n, int) for n in numbers) and len(set(numbers)) == len(numbers)
+    segments = []
+    for i, entry in enumerate(entries, 1):
+        current = (entry.get("range") or entry.get("preview_range")
+                   or [render_pipeline._time_to_seconds(entry["start_time"]), render_pipeline._time_to_seconds(entry["end_time"])])
+        edit = clip_effects.sanitize_edit(entry.get("edit") or {}, current[0], current[1], meta.get("duration"))
+        hook_text = edit["hook"]["text"] or next(iter(_hook_suggestions(video_id, entry)), "")
+        edit = clip_effects.apply_template(edit, style, hook_text,
+                                           lambda name: bool(clip_effects.asset_path(assets_dir, name)), source_text)
+        segment = {k: entry.get(k) for k in ("start_time", "end_time", "topic", "segment_number", "viral_score")}
+        segment["segment_number"] = segment["segment_number"] if unique else i
+        segment["options"] = {"edit": clip_effects.sanitize_edit(edit, current[0], current[1], meta.get("duration"))}
+        segments.append(segment)
+
+    job = jobs.create(user.id, video_id, meta.get("title", ""), segments, mode="final")
+    threading.Thread(
+        target=_run_render_job,
+        args=(job["id"], user, video_id, segments, options, source_path, youtube_url, _public_base()),
+        daemon=True,
+    ).start()
+    return jsonify({"job": job}), 202
+
+
+@app.route("/clips-zip/<video_id>", methods=["GET"])
+def serve_clips_zip(video_id):
+    """Semua klip final satu video dalam satu ZIP, tiap file dinamai sesuai judul klipnya."""
+    if not _is_safe_id(video_id):
+        return jsonify({"error": "File not found"}), 404
+    folder = os.path.join(CLIPS_ROOT, video_id)
+    if AUTH_ENABLED:
+        try:
+            owner, token_video, token_file = _media_signer.loads(request.args.get("t", ""), max_age=MEDIA_URL_MAX_AGE)
+        except (BadSignature, ValueError, TypeError):
+            return jsonify({"error": "Link unduhan sudah kedaluwarsa. Muat ulang halaman."}), 404
+        if token_video != video_id or token_file != "zip" or (owner and not _is_safe_id(owner)):
+            return jsonify({"error": "File not found"}), 404
+        folder = os.path.join(CLIPS_ROOT, owner, video_id) if owner else folder
+    finals = _final_clips(folder)
+    if not finals:
+        return jsonify({"error": "Belum ada klip final untuk diunduh."}), 404
+
+    # MP4 sudah terkompresi → disimpan apa adanya (cepat, ukuran sama)
+    fd, zip_path = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    used = set()
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as archive:
+        for entry, path in sorted(finals, key=lambda item: item[0].get("range") or [0]):
+            stem = clip_effects.download_filename(_clip_title(video_id, entry), _entry_base(entry), ext="")
+            name, n = stem, 2
+            while name.lower() in used:
+                name, n = f"{stem} ({n})", n + 1
+            used.add(name.lower())
+            archive.write(path, f"{name}.mp4")
+            thumb = (entry.get("thumbnail") or {}).get("filename")
+            if thumb and os.path.isfile(os.path.join(folder, thumb)):
+                archive.write(os.path.join(folder, thumb), f"{name}.jpg")
+    meta = (_get_cached_analysis(video_id) or {}).get("video_metadata") or {}
+    response = send_file(zip_path, as_attachment=True, mimetype="application/zip",
+                         download_name=clip_effects.download_filename(meta.get("title") or video_id, video_id, ext=".zip"))
+    response.call_on_close(lambda: _remove_file_quietly(zip_path))
+    return response
+
+
+def _remove_file_quietly(path: str):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 @app.route("/clips/<video_id>/<filename>", methods=["GET"])
 def serve_clip(video_id, filename):
     if not _is_safe_id(video_id):
@@ -1427,10 +1658,12 @@ def serve_clip(video_id, filename):
     # dengan nama file dari judul klip (bukan "<id>_<awal>-<akhir>.mp4")
     if request.args.get("download") == "1":
         entry = next((e for e in _load_manifest(folder)["clips"].values()
-                      if filename in (e.get("filename"), e.get("preview_filename"))), None)
+                      if filename in (e.get("filename"), e.get("preview_filename"), (e.get("thumbnail") or {}).get("filename"))),
+                     None)
         title = _clip_title(video_id, entry) if entry else ""
+        stem, ext = os.path.splitext(filename)
         return send_from_directory(folder, filename, as_attachment=True,
-                                   download_name=clip_effects.download_filename(title, filename.removesuffix(".mp4")))
+                                   download_name=clip_effects.download_filename(title, stem, ext=ext))
     return send_from_directory(folder, filename)
 
 # ══════════════════════════════════════════════════════════════

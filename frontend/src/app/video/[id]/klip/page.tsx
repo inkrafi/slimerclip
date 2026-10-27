@@ -1,9 +1,11 @@
 'use client'
 
-import { use, useEffect, useState } from 'react'
+import { use, useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Download, Loader2, Pencil } from 'lucide-react'
+import BatchRenderBar from '@/components/BatchRenderBar'
 import RequireAuth from '@/components/RequireAuth'
+import UploadKitPanel from '@/components/UploadKitPanel'
 import { downloadUrl, getVideo } from '@/lib/api'
 import { formatClock, formatSpan, toSeconds } from '@/lib/clip-meta'
 import { VideoDetail } from '@/lib/types'
@@ -29,9 +31,10 @@ function Clips({ id }: { id: string }) {
   const [detail, setDetail] = useState<VideoDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const load = useCallback(() => {
     getVideo(id).then(setDetail).catch(e => setError(e.message))
   }, [id])
+  useEffect(load, [load])
 
   const title = detail?.analysis?.video_metadata?.title || id
 
@@ -42,6 +45,9 @@ function Clips({ id }: { id: string }) {
       </Link>
       <h1 className="mt-3 type-display text-4xl text-ink">Klip tersimpan</h1>
       <p className="mt-2 max-w-[68ch] text-ink-muted">{title}</p>
+      {detail && detail.clips.length > 0 && (
+        <BatchRenderBar videoId={id} clipCount={detail.clips.filter(c => !c.legacy).length} zipUrl={detail.zip_url} onDone={load} />
+      )}
 
       <div className="mt-10">
         {error ? (
@@ -65,6 +71,7 @@ function Clips({ id }: { id: string }) {
                 <li key={clip.key}>
                   <video
                     src={(clip.url ?? clip.preview_url) || undefined}
+                    poster={clip.thumbnail_url || undefined}
                     controls
                     preload="metadata"
                     playsInline
@@ -90,6 +97,7 @@ function Clips({ id }: { id: string }) {
                   {note && <p className="mt-1 text-xs text-ink-muted">{note}</p>}
                   {clip.legacy && <p className="mt-1 text-xs text-ink-muted">Dirender dengan versi lama, sebelum klip dicatat per momen.</p>}
                   <p className="mt-1 text-xs text-ink-faint">Dirender {clip.rendered_at}</p>
+                  {clip.upload && <UploadKitPanel kit={clip.upload} />}
                   {isPreview && (
                     <p className="mt-1 text-xs text-ink-muted">Belum ada caption. Edit lalu render final untuk mengunduh.</p>
                   )}

@@ -14,6 +14,7 @@ import { useRenderJob } from '@/hooks/useRenderJob'
 import { useVideoUpload } from '@/hooks/useVideoUpload'
 import { analyzeVideo, ApiError, getClips, getVideo, youtubeUrlFor } from '@/lib/api'
 import { formatSpan, videoLength } from '@/lib/clip-meta'
+import { fitOf } from '@/lib/niche'
 import { ClipProgress, Me, RenderedClip, UploadedFileInfo, VideoDetail } from '@/lib/types'
 
 type Phase = 'loading' | 'analyzing' | 'ready' | 'error'
@@ -38,6 +39,7 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
   const [openMoments, setOpenMoments] = useState<Set<number>>(new Set())
   const [activeMoment, setActiveMoment] = useState<number | null>(null)
   const [activeClip, setActiveClip] = useState<{ start: string; end: string } | null>(null)
+  const [showOutside, setShowOutside] = useState(false)
   const startedRef = useRef(false)
 
   const refreshClips = useCallback(() => {
@@ -111,6 +113,18 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
     for (const c of detail?.clips ?? []) map.set(c.key, c)
     return map
   }, [detail?.clips])
+
+  // Niche channel: momen di luar niche disembunyikan (bisa ditampilkan), momen lucu ikut sebagai selingan
+  const fits = useMemo(
+    () => new Map((analysis?.segments ?? []).map(s => [s.segment_number, fitOf(s, me?.niche)])),
+    [analysis?.segments, me?.niche],
+  )
+  const outsideCount = [...fits.values()].filter(f => f === 'luar').length
+  const shownSegments = useMemo(
+    () => (analysis?.segments ?? []).filter(s => showOutside || fits.get(s.segment_number) !== 'luar'),
+    [analysis?.segments, fits, showOutside],
+  )
+  const categorized = (analysis?.segments ?? []).some(s => s.category)
 
   // Progres job render (termasuk yang dimulai sebelum pindah halaman) menimpa status "sudah dirender"
   const mergedProgress = useMemo(() => {
@@ -213,16 +227,16 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
 
       <div className="mt-12">
         <CutMap
-          segments={analysis.segments}
+          segments={shownSegments}
           duration={duration}
           heatmap={analysis.video_metadata?.heatmap}
           onSelect={focusMoment}
           activeNumber={activeMoment}
           animate
-          label={`Peta potongan: ${analysis.segments.length} momen dari video ${formatSpan(duration)}`}
+          label={`Peta potongan: ${shownSegments.length} momen dari video ${formatSpan(duration)}`}
         />
         <p className="mt-1 text-sm text-ink-muted">
-          {analysis.segments.length} momen dari video {formatSpan(duration)}. Klik penanda untuk membuka momennya.
+          {shownSegments.length} momen dari video {formatSpan(duration)}. Klik penanda untuk membuka momennya.
           {analysis.video_metadata?.heatmap?.length ? ' Kurva samar adalah grafik bagian yang paling sering diputar ulang di YouTube.' : ''}
         </p>
       </div>
@@ -230,12 +244,26 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
       <div className="mt-12 grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] items-start">
         <section aria-labelledby="moments-title">
           <h2 id="moments-title" className="type-heading text-2xl text-ink">Momen, dari skor tertinggi</h2>
+          {outsideCount > 0 ? (
+            <p className="mt-1 text-sm text-ink-muted">
+              {showOutside ? `Termasuk ${outsideCount} momen di luar niche channelmu.` : `${outsideCount} momen di luar niche channelmu disembunyikan.`}{' '}
+              <button type="button" onClick={() => setShowOutside(v => !v)} className="text-ink underline underline-offset-4 decoration-rule hover:decoration-ink-muted">
+                {showOutside ? 'Sembunyikan' : 'Tampilkan'}
+              </button>
+            </p>
+          ) : categorized && me && me.niche.topics.length === 0 && (
+            <p className="mt-1 text-sm text-ink-muted">
+              Atur <Link href="/pengaturan" className="text-ink underline underline-offset-4 decoration-rule">niche channel</Link> agar
+              momen di luar topikmu disembunyikan.
+            </p>
+          )}
           <div className="mt-4 rounded-lg border border-rule glass overflow-hidden">
-            {analysis.segments.map(seg => (
+            {shownSegments.map(seg => (
               <SegmentCard
                 key={`${seg.segment_number}-${seg.start_time}`}
                 segment={seg}
                 isBest={analysis.best_segment_number === seg.segment_number}
+                fit={fits.get(seg.segment_number)}
                 isOpen={openMoments.has(seg.segment_number)}
                 onToggle={() => toggleMoment(seg.segment_number)}
                 onPlayClip={(s, e) => setActiveClip({ start: s, end: e })}
@@ -248,10 +276,10 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
 
         <aside className="lg:sticky lg:top-20">
           <ClipGeneratorPanel
-            key={analysis.segments.map(s => s.start_time).join()}
+            key={shownSegments.map(s => s.start_time).join()}
             videoId={videoId}
             youtubeUrl={youtubeUrl}
-            segments={analysis.segments}
+            segments={shownSegments}
             onGenerate={start}
             progressMap={mergedProgress}
             isGenerating={isGenerating}
