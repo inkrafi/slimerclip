@@ -13,9 +13,11 @@ import { useAuth } from '@/components/AuthProvider'
 import { useRenderJob } from '@/hooks/useRenderJob'
 import { useVideoUpload } from '@/hooks/useVideoUpload'
 import { analyzeVideo, ApiError, getClips, getVideo, youtubeUrlFor } from '@/lib/api'
+import ClipProfileFields, { useClipProfileOptions } from '@/components/ClipProfileFields'
+import { parseProfile, profileSummary, sameProfile, saveProfile, useStoredProfile } from '@/lib/clipProfile'
 import { formatSpan, videoLength } from '@/lib/clip-meta'
 import { fitOf } from '@/lib/niche'
-import { ClipProgress, Me, RenderedClip, UploadedFileInfo, VideoDetail } from '@/lib/types'
+import { ClipProfile, ClipProgress, Me, RenderedClip, UploadedFileInfo, VideoDetail } from '@/lib/types'
 
 type Phase = 'loading' | 'analyzing' | 'ready' | 'error'
 
@@ -41,6 +43,12 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
   const [activeClip, setActiveClip] = useState<{ start: string; end: string } | null>(null)
   const [showOutside, setShowOutside] = useState(false)
   const startedRef = useRef(false)
+  // Profil analisis (admin). Selalu dikirim: backend mengabaikannya untuk pengguna biasa.
+  const storedProfile = useStoredProfile()
+  const profileRef = useRef(storedProfile)
+  useEffect(() => { profileRef.current = storedProfile }, [storedProfile])
+  const profileOptions = useClipProfileOptions(!!me?.is_admin)
+  const [profileDraft, setProfileDraft] = useState<ClipProfile | null>(null)
 
   const refreshClips = useCallback(() => {
     getClips(videoId)
@@ -62,7 +70,7 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
     setError(null)
     setErrorCode(undefined)
     try {
-      const analysis = await analyzeVideo(youtubeUrl, force)
+      const analysis = await analyzeVideo(youtubeUrl, force, profileRef.current)
       const fresh = await getVideo(videoId)
       setDetail({ ...fresh, analysis: fresh.analysis ?? analysis })
       setUploadedFile(prev => prev ?? fresh.upload)
@@ -163,6 +171,14 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
     runAnalysis(true)
   }
 
+  const reanalyzeWith = (profile: ClipProfile) => {
+    if (!confirm(`Analisis ulang dengan profil ini? ${reanalyzeCost(me)} Klip yang sudah dirender tetap tersimpan.`)) return
+    saveProfile(profile)
+    profileRef.current = profile
+    setProfileDraft(null)
+    runAnalysis(true)
+  }
+
   if (phase === 'loading') {
     return <p className="pt-16 flex items-center gap-2 text-ink-muted"><Loader2 className="size-4 animate-spin" aria-hidden /> Memuat…</p>
   }
@@ -205,7 +221,7 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
 
   const duration = videoLength(analysis.segments, analysis.video_metadata?.duration)
   const clipCount = detail?.clips.length ?? 0
-  const legacyScore = analysis.scoring_version !== 2
+  const legacyScore = (analysis.scoring_version ?? 0) < 2
 
   return (
     <div className="pt-10">
@@ -222,6 +238,37 @@ export default function VideoWorkspace({ videoId }: { videoId: string }) {
         )}
         <button type="button" onClick={reanalyze} disabled={isGenerating} className="btn btn-quiet">Analisis ulang</button>
       </div>
+
+      {me?.is_admin && (
+        <section aria-label="Profil analisis" className="mt-4 rounded-lg border border-rule bg-bay/40 px-4 py-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-ink-muted">
+              <span className="text-ink">Profil analisis:</span>{' '}
+              {analysis.profile
+                ? profileSummary(analysis.profile, profileOptions, analysis.video_type, analysis.language)
+                : 'dianalisis sebelum ada profil (default)'}
+            </p>
+            {!profileDraft && (
+              <button type="button" disabled={isGenerating} className="btn btn-sm btn-quiet"
+                onClick={() => setProfileDraft(parseProfile(JSON.stringify(analysis.profile ?? storedProfile)))}>
+                Ubah profil
+              </button>
+            )}
+          </div>
+          {profileDraft && (
+            <div className="mt-3">
+              <ClipProfileFields value={profileDraft} onChange={setProfileDraft} options={profileOptions} />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="btn btn-sm btn-primary" disabled={isGenerating || sameProfile(profileDraft, analysis.profile)}
+                  onClick={() => reanalyzeWith(profileDraft)}>
+                  Analisis ulang dengan profil ini
+                </button>
+                <button type="button" className="btn btn-sm btn-quiet" onClick={() => setProfileDraft(null)}>Batal</button>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {legacyScore && (
         <p className="mt-4 max-w-2xl border-l-2 border-signal pl-4 text-sm text-ink-muted">

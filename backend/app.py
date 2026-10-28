@@ -1,5 +1,6 @@
 import os
 import json
+from types import SimpleNamespace
 import shutil
 import re
 import time
@@ -21,6 +22,11 @@ from caption_styles import sanitize_caption_style
 import clip_effects
 import thumbnail
 import upload_kit
+import auto_edit
+import clip_profile
+import performance
+import reviews
+import telemetry
 import longform
 import longform_thumb
 import topics
@@ -80,6 +86,15 @@ USER_UPLOAD_MAX_MINUTES = int(os.getenv("USER_UPLOAD_MAX_MINUTES", "90"))
 # URL klip berisi token bertanda tangan (tag <video> tidak bisa mengirim header login)
 MEDIA_URL_MAX_AGE = 24 * 3600
 _media_signer = URLSafeTimedSerializer(derived_key("media-url").hex(), salt="clip-url")
+# Link review untuk klien (tanpa login): token [pemilik, id_review], lihat reviews.py
+_review_signer = URLSafeTimedSerializer(derived_key("review-link").hex(), salt="review")
+_review_edit_lock = threading.Lock()
+# Laporan performa per klien untuk klien (tanpa login): token [pemilik, kunci_klien], berlaku 1 tahun
+_report_signer = URLSafeTimedSerializer(derived_key("report-link").hex(), salt="report")
+REPORT_LINK_DAYS = 365
+PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+_report_refreshing: set = set()        # pemilik/klien yang sedang diperbarui di latar
+_report_views: dict = {}               # (token, periode) → waktu dicatat, agar report_viewed tidak dobel
 # URL publik backend untuk link klip; kosong = dari request (atau ProxyFix di hosting)
 PUBLIC_BACKEND_URL = os.getenv("PUBLIC_BACKEND_URL", "").strip().rstrip("/")
 
@@ -93,7 +108,8 @@ ALLOWED_ORIGINS = [o.strip() for o in os.getenv(
 # Mode lokal: host yang boleh dipakai untuk mengakses backend (mencegah DNS rebinding)
 ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 # Endpoint tanpa login (klip dilindungi token di URL-nya)
-PUBLIC_ENDPOINTS = {"health_check", "serve_clip", "serve_clips_zip", "serve_longform", "serve_asset", "serve_sfx", "static"}
+PUBLIC_ENDPOINTS = {"health_check", "serve_clip", "serve_clips_zip", "serve_longform", "serve_asset", "serve_sfx", "serve_music",
+                    "review_public", "review_decision", "review_publish", "report_public", "static"}
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ALLOWED_RESOLUTIONS = {"720", "1080", "2160"}  # sisi pendek video 9:16; 2160 = 4K
@@ -329,6 +345,8 @@ def _list_clips(user: User, video_id: str, base: str) -> list:
             continue
         recorded.update(os.path.basename(f) for f in (final, preview) if f)
         shown = final or preview
+        srt = final and os.path.join(folder, _entry_base(entry) + ".srt")
+        srt = srt if srt and os.path.isfile(srt) else None
         segment = _analysis_segment(video_id, entry)
         title = _clip_title(video_id, entry)
         clips.append({
@@ -343,6 +361,9 @@ def _list_clips(user: User, video_id: str, base: str) -> list:
             "preview_url": (_clip_url(base, user, video_id, entry["preview_filename"], int(os.path.getmtime(preview)))
                             if preview else None),
             "thumbnail_url": (_thumbnail_info(base, user, video_id, folder, entry) or {}).get("url"),
+            # Subtitle SRT klip final (teks hasil edit, waktu relatif awal klip)
+            "srt_url": (_clip_url(base, user, video_id, os.path.basename(srt), int(os.path.getmtime(srt)))
+                        if srt else None),
             "file_size_mb": round(os.path.getsize(shown) / (1024 * 1024), 1),
             "rendered_at": entry.get("updated_at") or entry.get("rendered_at"),
         })
@@ -794,10 +815,14 @@ def analyze():
     if not video_id or not _is_safe_id(video_id):
         return jsonify({"error": "Tidak bisa menemukan ID video dari URL tersebut."}), 400
 
-    # ── Cek Cache dulu ──
+    # Profil analisis (bahasa, tipe video, jumlah & durasi klip) hanya untuk admin; pengguna biasa: default otomatis
+    profile = clip_profile.sanitize(data.get("profile") if user.is_admin else None)
+
+    # ── Cek Cache dulu ── (analisis dengan profil berbeda dari yang diminta admin → analisis ulang)
     if not data.get("force_refresh", False):
         cached = _get_cached_analysis(video_id)
-        if cached:
+        if cached and (not user.is_admin or "profile" not in data
+                       or clip_profile.sanitize(cached.get("profile")) == profile):
             accounts.add_video(user.id, video_id)
             return jsonify({**cached, "from_cache": True}), 200
 
@@ -820,7 +845,7 @@ def analyze():
         upload = _latest_upload(user, video_id)
         media_path = _resolve_upload_path(user, upload["local_video_path"]) if upload else None
         result = analyze_youtube_video(youtube_url, api_key=api_key, media_path=media_path,
-                                       allow_download=user.is_admin)
+                                       allow_download=user.is_admin, profile=profile)
         if "error" in result:
             return jsonify(result), 422
         succeeded = True
@@ -1021,8 +1046,28 @@ def generate_clips():
     return jsonify({"job": job}), 202
 
 
+def _render_hints(video_id: str) -> dict:
+    """Dari analisis: bahasa ucapan (untuk Whisper) dan tipe video (untuk tata letak 9:16)."""
+    analysis = _get_cached_analysis(video_id) or {}
+    profile = analysis.get("profile")
+    language = analysis.get("language") or clip_profile.resolved_language(profile, analysis.get("detected_language"))
+    return {
+        "language": language,
+        "video_type": analysis.get("video_type") or clip_profile.resolved_type(profile, analysis.get("detected_type")),
+        "subtitle_language": clip_profile.subtitle_target(profile, language),
+    }
+
+
+@app.route("/clip-profile", methods=["GET"])
+def clip_profile_options():
+    """Pilihan profil analisis untuk form admin (bahasa, tipe video, durasi, jumlah klip)."""
+    _require_admin(_user())
+    return jsonify(clip_profile.options())
+
+
 def _run_render_job(job_id, user, video_id, segments, options, local_video_path, youtube_url, base):
     """Worker job render: siapkan video sumber lalu render tiap momen, sambil memperbarui status job."""
+    options = {**_render_hints(video_id), **options}
     try:
         # 1. Dapatkan video sumber
         if local_video_path:
@@ -1115,16 +1160,42 @@ def job_detail(job_id):
 # ══════════════════════════════════════════════════════════════
 # Editor klip (khusus admin): aset (logo, musik) dan render ulang satu klip dengan resep edit
 # ══════════════════════════════════════════════════════════════
-MAX_ASSETS = {True: 60, False: 20}  # admin / pengguna biasa
+MAX_ASSETS = {True: 200, False: 20}  # admin (pustaka musik & paket SFX) / pengguna biasa
+ASSET_MOODS_FILE = "_moods.json"     # suasana musik upload pengguna: {nama_aset: suasana}
+_asset_moods_lock = threading.Lock()
 
 
-def _asset_entry(user: User, name: str, base: str) -> dict:
+def _asset_moods(user: User) -> dict:
+    try:
+        with open(os.path.join(_assets_dir(user), ASSET_MOODS_FILE), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_asset_moods(user: User, moods: dict):
+    folder = _assets_dir(user)
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, ASSET_MOODS_FILE)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(moods, f, ensure_ascii=False)
+    os.replace(path + ".tmp", path)
+
+
+def _asset_entry(user: User, name: str, base: str, moods: dict | None = None) -> dict:
     path = os.path.join(_assets_dir(user), name)
+    kind = clip_effects.asset_kind(name)
+    tagged = (moods if moods is not None else _asset_moods(user)).get(name) if kind == "audio" else None
+    guessed = auto_edit.guess_mood(name) if kind == "audio" and not tagged else None
     return {
+        # Musik: suasana dari tanda di editor ("tag") atau tebakan dari nama file ("name")
+        "mood": tagged or guessed,
+        "mood_source": "tag" if tagged else "name" if guessed else None,
         "name": name,
         # Nama asli tanpa awalan acak "<8 hex>_"
         "label": name.split("_", 1)[1] if re.match(r"^[0-9a-f]{8}_", name) else name,
-        "kind": clip_effects.asset_kind(name),
+        "kind": kind,
         "size_mb": round(os.path.getsize(path) / (1024 * 1024), 2),
         "url": _signed_media_url(base, f"assets-file/{name}", [user.storage_key, name], int(os.path.getmtime(path))),
     }
@@ -1137,7 +1208,8 @@ def _list_assets(user: User, base: str) -> list:
     names = [n for n in os.listdir(folder)
              if clip_effects.asset_kind(n) and clip_effects.ASSET_NAME_RE.match(n) and os.path.isfile(os.path.join(folder, n))]
     names.sort(key=lambda n: os.path.getmtime(os.path.join(folder, n)), reverse=True)
-    return [_asset_entry(user, n, base) for n in names]
+    moods = _asset_moods(user)
+    return [_asset_entry(user, n, base, moods) for n in names]
 
 
 def _media_has_stream(path: str, kind: str) -> bool:
@@ -1233,7 +1305,7 @@ def assets_upload():
     folder = _assets_dir(user)
     os.makedirs(folder, exist_ok=True)
     limit = MAX_ASSETS[user.is_admin]
-    if len(os.listdir(folder)) >= limit:
+    if sum(1 for n in os.listdir(folder) if clip_effects.asset_kind(n)) >= limit:
         raise ApiError(400, f"Maksimal {limit} aset. Hapus aset yang tidak dipakai dulu.")
 
     ext = os.path.splitext(file.filename)[1].lower()
@@ -1259,7 +1331,32 @@ def assets_delete(name):
     path = os.path.join(_assets_dir(user), name)
     if os.path.isfile(path):
         os.remove(path)
+    with _asset_moods_lock:
+        moods = _asset_moods(user)
+        if moods.pop(name, None) is not None:
+            _save_asset_moods(user, moods)
     return jsonify({"message": "Aset dihapus."})
+
+
+@app.route("/assets/<name>/mood", methods=["PUT"])
+def assets_mood(name):
+    """Tandai suasana musik upload: {mood: santai|semangat|tegang|lucu|dramatis|umum|""} ("" = hapus tanda)."""
+    user = _user()
+    if not clip_effects.ASSET_NAME_RE.match(name) or ".." in name or clip_effects.asset_kind(name) != "audio":
+        raise ApiError(400, "Nama aset tidak valid.")
+    if not os.path.isfile(os.path.join(_assets_dir(user), name)):
+        raise ApiError(404, "Aset tidak ditemukan.")
+    mood = (request.get_json(silent=True) or {}).get("mood") or ""
+    if mood and mood not in auto_edit.MOODS:
+        raise ApiError(400, "Suasana tidak dikenal.")
+    with _asset_moods_lock:
+        moods = _asset_moods(user)
+        if mood:
+            moods[name] = mood
+        else:
+            moods.pop(name, None)
+        _save_asset_moods(user, moods)
+    return jsonify({"asset": _asset_entry(user, name, _public_base())})
 
 
 @app.route("/assets-file/<name>", methods=["GET"])
@@ -1282,6 +1379,14 @@ def serve_sfx(name):
     if name not in clip_effects.SFX_LIBRARY:
         return jsonify({"error": "File not found"}), 404
     return send_from_directory(clip_effects.SFX_DIR, name, max_age=7 * 24 * 3600)
+
+
+@app.route("/music/<name>", methods=["GET"])
+def serve_music(name):
+    """Pustaka musik latar bawaan (publik, disintesis sendiri, bebas lisensi)."""
+    if name not in clip_effects.MUSIC_LIBRARY:
+        return jsonify({"error": "File not found"}), 404
+    return send_from_directory(clip_effects.MUSIC_DIR, name, max_age=7 * 24 * 3600)
 
 
 def _editor_clip(user: User, video_id: str, key) -> tuple[str, dict]:
@@ -1371,8 +1476,16 @@ def editor_get(video_id):
     # atau klip final untuk klip lama yang belum punya pratinjau
     playing_range = (entry.get("preview_range") if preview else entry.get("range")) or moment
     final_range = entry.get("range") or playing_range
-    # Resep tersimpan (termasuk format lama) diseragamkan; tanpa resep = rentang pratinjau
-    edit = clip_effects.sanitize_edit(entry.get("edit") or {}, playing_range[0], playing_range[1])
+    transcript = render_pipeline.load_transcript(os.path.join(folder, clip_base + ".words.json"))
+    assets = _list_assets(user, base)
+    # Edit otomatis (hook, musik sesuai suasana, efek suara, suara jernih, HD) sebagai titik awal: dipakai langsung
+    # untuk klip yang belum pernah diedit; untuk klip lain tersedia lewat tombol "Edit otomatis"
+    auto_recipe, auto_summary = auto_edit.build(
+        _analysis_segment(video_id, entry), playing_range[0], playing_range[1], transcript,
+        _hook_suggestions(video_id, entry), [a for a in assets if a.get("kind") == "audio"])
+    auto = clip_effects.sanitize_edit(auto_recipe, playing_range[0], playing_range[1])
+    # Resep tersimpan (termasuk format lama) diseragamkan; tanpa resep = edit otomatis
+    edit = clip_effects.sanitize_edit(entry["edit"], playing_range[0], playing_range[1]) if entry.get("edit") else auto
     baked = clip_effects.sanitize_edit(entry["edit"], final_range[0], final_range[1]) if final and entry.get("edit") else None
     options = entry.get("final_options") or entry.get("render_options") or {
         "resolution": entry.get("resolution"), "caption_enabled": entry.get("caption", True)}
@@ -1395,14 +1508,20 @@ def editor_get(video_id):
         "video_duration": meta.get("duration") or None,
         "edit": edit,
         "options": _sanitize_options(options),
-        "transcript": render_pipeline.load_transcript(os.path.join(folder, clip_base + ".words.json")),
+        "transcript": transcript,
+        "auto_edit": auto,
+        "auto_summary": auto_summary,
+        "auto_applied": not entry.get("edit"),
         "source_ready": bool(source_path or source_url),
         "final_left": _final_left(user),
         "hook_suggestions": _hook_suggestions(video_id, entry),
         "thumbnail": _thumbnail_info(base, user, video_id, folder, entry),
         "thumbnail_suggestion": _thumbnail_suggestion(video_id, entry),
-        "sfx_library": [{"name": n, "label": label, "url": f"{base}sfx/{n}"} for n, label in clip_effects.SFX_LIBRARY.items()],
-        "assets": _list_assets(user, base),
+        "sfx_library": [{"name": n, "label": label, "group": clip_effects.SFX_GROUP_OF[n], "url": f"{base}sfx/{n}"}
+                        for n, label in clip_effects.SFX_LIBRARY.items()],
+        "music_library": [{"name": n, "label": label, "mood": mood, "url": f"{base}music/{n}"}
+                          for n, (label, mood) in clip_effects.MUSIC_LIBRARY.items()],
+        "assets": assets,
         "templates": _load_templates(user),
     })
 
@@ -1534,6 +1653,79 @@ def thumbnail_create(video_id):
     return jsonify({"thumbnail": _thumbnail_info(_public_base(), user, video_id, folder, entry)})
 
 
+MAX_CLIENT_PRESETS = 50
+
+
+def _presets_path(user: User) -> str:
+    return os.path.join(_owner_root(TEMPLATES_ROOT, user), "client_presets.json")
+
+
+def _load_presets(user: User) -> list:
+    try:
+        with open(_presets_path(user), encoding="utf-8") as f:
+            items = json.load(f)
+        return items if isinstance(items, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+@app.route("/client-presets", methods=["GET"])
+def client_presets_list():
+    """Preset klien (admin): profil analisis + format edit yang biasa dipakai untuk klien itu."""
+    user = _user()
+    _require_admin(user)
+    return jsonify({"presets": _load_presets(user)})
+
+
+@app.route("/client-presets", methods=["POST"])
+def client_presets_save():
+    """{name, profile, template_id?}. Nama yang sama = ditimpa."""
+    user = _user()
+    _require_admin(user)
+    body = request.get_json(silent=True) or {}
+    name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()[:40]
+    if not name:
+        raise ApiError(400, "Beri nama preset klien ini.")
+    template_id = body.get("template_id") or ""
+    if template_id and not any(t.get("id") == template_id for t in _load_templates(user)):
+        raise ApiError(400, "Format edit untuk preset ini tidak ditemukan.", "template_not_found")
+    with _templates_lock:
+        items = _load_presets(user)
+        existing = next((t for t in items if str(t.get("name", "")).lower() == name.lower()), None)
+        if not existing and len(items) >= MAX_CLIENT_PRESETS:
+            raise ApiError(400, f"Maksimal {MAX_CLIENT_PRESETS} preset klien. Hapus yang tidak dipakai dulu.")
+        preset = {
+            "id": existing["id"] if existing else uuid.uuid4().hex[:12],
+            "name": name,
+            "profile": clip_profile.sanitize(body.get("profile")),
+            "template_id": template_id,
+            "updated_at": int(time.time()),
+        }
+        items = [preset] + [t for t in items if t is not existing]
+        path = _presets_path(user)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False)
+        os.replace(path + ".tmp", path)
+    return jsonify({"preset": preset}), 201
+
+
+@app.route("/client-presets/<preset_id>", methods=["DELETE"])
+def client_presets_delete(preset_id):
+    user = _user()
+    _require_admin(user)
+    if not TEMPLATE_ID_RE.match(preset_id):
+        raise ApiError(400, "Preset tidak valid.")
+    with _templates_lock:
+        items = [t for t in _load_presets(user) if t.get("id") != preset_id]
+        path = _presets_path(user)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False)
+        os.replace(path + ".tmp", path)
+    return jsonify({"message": "Preset klien dihapus."})
+
+
 @app.route("/videos/<video_id>/render-all", methods=["POST"])
 def render_all(video_id):
     """
@@ -1579,7 +1771,13 @@ def render_all(video_id):
     for i, entry in enumerate(entries, 1):
         current = (entry.get("range") or entry.get("preview_range")
                    or [render_pipeline._time_to_seconds(entry["start_time"]), render_pipeline._time_to_seconds(entry["end_time"])])
-        edit = clip_effects.sanitize_edit(entry.get("edit") or {}, current[0], current[1], meta.get("duration"))
+        base_edit = entry.get("edit")
+        if not base_edit:   # belum pernah diedit → mulai dari edit otomatis (efek suara, suara jernih, HD, dst.)
+            words = render_pipeline.load_transcript(os.path.join(folder, _entry_base(entry) + ".words.json"))
+            base_edit, _ = auto_edit.build(_analysis_segment(video_id, entry), current[0], current[1], words,
+                                           _hook_suggestions(video_id, entry),
+                                           [a for a in _list_assets(user, "") if a.get("kind") == "audio"])
+        edit = clip_effects.sanitize_edit(base_edit, current[0], current[1], meta.get("duration"))
         hook_text = edit["hook"]["text"] or next(iter(_hook_suggestions(video_id, entry)), "")
         edit = clip_effects.apply_template(edit, style, hook_text,
                                            lambda name: bool(clip_effects.asset_path(assets_dir, name)), source_text)
@@ -1630,6 +1828,9 @@ def serve_clips_zip(video_id):
             thumb = (entry.get("thumbnail") or {}).get("filename")
             if thumb and os.path.isfile(os.path.join(folder, thumb)):
                 archive.write(os.path.join(folder, thumb), f"{name}.jpg")
+            srt = os.path.join(folder, _entry_base(entry) + ".srt")
+            if os.path.isfile(srt):
+                archive.write(srt, f"{name}.srt")
     meta = (_get_cached_analysis(video_id) or {}).get("video_metadata") or {}
     response = send_file(zip_path, as_attachment=True, mimetype="application/zip",
                          download_name=clip_effects.download_filename(meta.get("title") or video_id, video_id, ext=".zip"))
@@ -1663,13 +1864,333 @@ def serve_clip(video_id, filename):
     # dengan nama file dari judul klip (bukan "<id>_<awal>-<akhir>.mp4")
     if request.args.get("download") == "1":
         entry = next((e for e in _load_manifest(folder)["clips"].values()
-                      if filename in (e.get("filename"), e.get("preview_filename"), (e.get("thumbnail") or {}).get("filename"))),
+                      if filename in (e.get("filename"), e.get("preview_filename"), (e.get("thumbnail") or {}).get("filename"),
+                                      _entry_base(e) + ".srt")),
                      None)
         title = _clip_title(video_id, entry) if entry else ""
         stem, ext = os.path.splitext(filename)
         return send_from_directory(folder, filename, as_attachment=True,
                                    download_name=clip_effects.download_filename(title, stem, ext=ext))
     return send_from_directory(folder, filename)
+
+# ══════════════════════════════════════════════════════════════
+# Link review per klien (tanpa login)
+# ══════════════════════════════════════════════════════════════
+
+def _review_token(user: User, review_id: str) -> str:
+    return _review_signer.dumps([user.storage_key, review_id])
+
+
+def _review_from_token(token: str) -> tuple[str, str, dict]:
+    """(pemilik, folder pemilik, review) dari token link; 404 jika token salah, kedaluwarsa, atau review dihapus."""
+    gone = ApiError(404, "Link review tidak ditemukan atau sudah kedaluwarsa. Minta link baru ke pengirimnya.", "review_gone")
+    try:
+        owner, review_id = _review_signer.loads(token, max_age=reviews.REVIEW_DAYS * 86400)
+    except (BadSignature, ValueError, TypeError):
+        raise gone
+    if not isinstance(owner, str) or (owner and not _is_safe_id(owner)):
+        raise gone
+    root = os.path.join(CLIPS_ROOT, owner) if owner else CLIPS_ROOT
+    review = reviews.load(root, review_id)
+    if not review or reviews.expired(review):
+        raise gone
+    return owner, root, review
+
+
+def _review_clips(storage_key: str, review: dict, base: str) -> list:
+    """Klip di link review beserta URL bertanda tangan, paket upload, keputusan, dan link unggahan."""
+    owner = SimpleNamespace(storage_key=storage_key)
+    clips_by_video: dict = {}
+    out = []
+    for item in review.get("items") or []:
+        video_id = item["video_id"]
+        if video_id not in clips_by_video:
+            clips_by_video[video_id] = {c["key"]: c for c in _list_clips(owner, video_id, base) if not c.get("legacy")}
+        clip = clips_by_video[video_id].get(item["key"])
+        k = reviews.item_key(video_id, item["key"])
+        entry = {"video_id": video_id, "key": item["key"],
+                 "decision": review.get("decisions", {}).get(k) or {"status": "pending"},
+                 "publish": review.get("publish", {}).get(k) or []}
+        if clip and clip.get("url"):
+            rng = clip.get("range") or []
+            entry.update({
+                "title": clip.get("title", ""),
+                "url": clip["url"],
+                "thumbnail_url": clip.get("thumbnail_url"),
+                "srt_url": clip.get("srt_url"),
+                "upload": clip.get("upload"),
+                "duration": round(rng[1] - rng[0], 1) if len(rng) == 2 else None,
+            })
+        else:
+            entry["unavailable"] = True   # klip dihapus / belum dirender final
+        out.append(entry)
+    return out
+
+
+def _review_admin_payload(user: User, review: dict) -> dict:
+    revisions = []
+    for item in review.get("items") or []:
+        decision = review.get("decisions", {}).get(reviews.item_key(item["video_id"], item["key"])) or {}
+        if decision.get("status") == "revision":
+            revisions.append({**item, "reason": decision.get("reason"), "note": decision.get("note", ""), "at": decision.get("at")})
+    return {
+        "id": review["id"], "client_name": review.get("client_name", ""), "title": review.get("title", ""),
+        "note": review.get("note", ""), "created_at": review.get("created_at"), "expires_at": review.get("expires_at"),
+        "items": review.get("items") or [], "summary": reviews.summary(review), "revisions": revisions,
+        "token": _review_token(user, review["id"]),
+    }
+
+
+@app.route("/reviews", methods=["POST"])
+def review_create():
+    """Buat link review: {client_name, title?, note?, preset_id?, items: [{video_id, key}]} — hanya klip final."""
+    user = _user()
+    _require_admin(user)
+    data = request.get_json(silent=True) or {}
+    client_name = reviews.clean_text(data.get("client_name"), 60)
+    if not client_name:
+        raise ApiError(400, "Isi nama klien.")
+    raw_items = data.get("items") if isinstance(data.get("items"), list) else []
+    if not raw_items or len(raw_items) > reviews.MAX_ITEMS:
+        raise ApiError(400, f"Pilih 1–{reviews.MAX_ITEMS} klip.")
+    finals: dict = {}
+    items, seen = [], set()
+    for raw in raw_items:
+        video_id = raw.get("video_id") if isinstance(raw, dict) else None
+        key = raw.get("key") if isinstance(raw, dict) else None
+        if not isinstance(video_id, str) or not _is_safe_id(video_id) or not isinstance(key, str):
+            raise ApiError(400, "Daftar klip tidak valid.")
+        if video_id not in finals:
+            finals[video_id] = {c["key"] for c in _list_clips(user, video_id, "") if c.get("url") and not c.get("legacy")}
+        if key in finals[video_id] and (video_id, key) not in seen:
+            seen.add((video_id, key))
+            items.append({"video_id": video_id, "key": key})
+    if not items:
+        raise ApiError(400, "Klip yang dipilih belum dirender final.", "no_final_clips")
+    review = reviews.create(client_name, data.get("title"), data.get("note"), items, data.get("preset_id") or "")
+    reviews.save(_owner_root(CLIPS_ROOT, user), review)
+    telemetry.log(user.storage_key, "batch_delivered", review_id=review["id"], client=client_name,
+                  client_id=review["preset_id"], clip_count=len(items))
+    return jsonify({"review": _review_admin_payload(user, review)}), 201
+
+
+@app.route("/reviews", methods=["GET"])
+def review_list():
+    """Link review milik admin (opsional ?video_id= : hanya yang memuat klip video itu), terbaru dulu."""
+    user = _user()
+    _require_admin(user)
+    video_id = request.args.get("video_id")
+    items = reviews.list_all(_owner_root(CLIPS_ROOT, user))
+    if video_id:
+        items = [r for r in items if any(i["video_id"] == video_id for i in r.get("items") or [])]
+    return jsonify({"reviews": [_review_admin_payload(user, r) for r in items]})
+
+
+@app.route("/reviews/<review_id>", methods=["DELETE"])
+def review_delete(review_id):
+    """Hapus link review (link langsung tidak bisa dibuka lagi)."""
+    user = _user()
+    _require_admin(user)
+    if not reviews.delete(_owner_root(CLIPS_ROOT, user), review_id):
+        raise ApiError(404, "Link review tidak ditemukan.")
+    return jsonify({"message": "Link review dihapus."})
+
+
+@app.route("/review/<token>", methods=["GET"])
+def review_public(token):
+    """Halaman klien: klip, paket upload, keputusan, link unggahan. Membuka link dicatat (tanpa IP/cookie)."""
+    owner, root, review = _review_from_token(token)
+    now = time.time()
+    with _review_edit_lock:
+        fresh = reviews.load(root, review["id"]) or review
+        opened = fresh.setdefault("opened", [])
+        if not opened or now - opened[-1] > 30 * 60:   # satu kunjungan per 30 menit
+            opened.append(now)
+            del opened[:-100]
+            reviews.save(root, fresh)
+            telemetry.log(owner, "review_link_opened", review_id=fresh["id"], client=fresh.get("client_name", ""),
+                          visit=len(opened))
+        review = fresh
+    return jsonify({
+        "review": {k: review.get(k) for k in ("client_name", "title", "note", "created_at", "expires_at")},
+        "clips": _review_clips(owner, review, _public_base()),
+        "summary": reviews.summary(review),
+        "reasons": list(reviews.REVISION_REASONS),
+    })
+
+
+@app.route("/review/<token>/decision", methods=["POST"])
+def review_decision(token):
+    """Klien menyetujui / minta revisi satu klip: {video_id, key, status, reason?, note?}."""
+    owner, root, review = _review_from_token(token)
+    data = request.get_json(silent=True) or {}
+    with _review_edit_lock:
+        review = reviews.load(root, review["id"]) or review
+        try:
+            decision = reviews.decide(review, str(data.get("video_id") or ""), str(data.get("key") or ""),
+                                      data.get("status"), data.get("reason"), data.get("note"))
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        reviews.save(root, review)
+    event = {"approved": "clip_approved", "revision": "revision_requested"}.get(decision["status"])
+    if event:
+        telemetry.log(owner, event, review_id=review["id"], client=review.get("client_name", ""),
+                      clip_key=data.get("key"), video_id=data.get("video_id"), reason=decision.get("reason"),
+                      note_length=len(decision.get("note", "")))
+    return jsonify({"decision": decision, "summary": reviews.summary(review)})
+
+
+@app.route("/review/<token>/publish", methods=["POST"])
+def review_publish(token):
+    """Klien menempelkan link klip yang sudah diunggah: {video_id, key, url} (YouTube/TikTok/Instagram)."""
+    owner, root, review = _review_from_token(token)
+    data = request.get_json(silent=True) or {}
+    with _review_edit_lock:
+        review = reviews.load(root, review["id"]) or review
+        try:
+            links = reviews.add_publish(review, str(data.get("video_id") or ""), str(data.get("key") or ""), str(data.get("url") or ""))
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        reviews.save(root, review)
+    telemetry.log(owner, "clip_published", review_id=review["id"], client=review.get("client_name", ""),
+                  clip_key=data.get("key"), video_id=data.get("video_id"), platform=links[-1]["platform"])
+    return jsonify({"publish": links, "summary": reviews.summary(review)})
+
+
+# ══════════════════════════════════════════════════════════════
+# Pelacakan performa klip & laporan bulanan per klien
+# ══════════════════════════════════════════════════════════════
+
+def _period_arg() -> str:
+    period = request.args.get("period") or ""
+    return period if PERIOD_RE.match(period) else performance.period_of(time.time())
+
+
+def _clip_info_lookup(storage_key: str):
+    """clip_info(video_id, key) untuk laporan: judul, thumbnail, skor viral (dari manifest klip pemilik)."""
+    owner = SimpleNamespace(storage_key=storage_key)
+    base = _public_base()
+    cache: dict = {}
+
+    def lookup(video_id, key):
+        if not video_id or not _is_safe_id(video_id):
+            return None
+        if video_id not in cache:
+            cache[video_id] = {c["key"]: c for c in _list_clips(owner, video_id, base)}
+        clip = cache[video_id].get(key) or {}
+        return {"title": clip.get("title"), "thumbnail_url": clip.get("thumbnail_url"), "viral_score": clip.get("viral_score")}
+    return lookup
+
+
+def _snapshot_logger(storage_key: str):
+    def on_snapshot(link, snap):
+        telemetry.log(storage_key, "clip_performance_snapshot", client_id=link["client_key"], clip_key=link["key"],
+                      video_id=link["video_id"], platform=link["platform"], views=snap["views"], likes=snap.get("likes"))
+    return on_snapshot
+
+
+def _report_token(user: User, key: str) -> str:
+    return _report_signer.dumps([user.storage_key, key])
+
+
+@app.route("/performance/clients", methods=["GET"])
+def performance_clients():
+    """Klien yang pernah menerima link review, dengan ringkasan bulan ini (dari angka tersimpan, tanpa memperbarui)."""
+    user = _user()
+    _require_admin(user)
+    root = _owner_root(CLIPS_ROOT, user)
+    review_list = reviews.list_all(root)
+    perf = performance.load(root)
+    period = _period_arg()
+    lookup = _clip_info_lookup(user.storage_key)
+    clients = {}
+    for review in review_list:
+        key = performance.client_key(review)
+        entry = clients.setdefault(key, {"key": key, "client_name": review.get("client_name", ""), "reviews": 0, "links": 0})
+        entry["reviews"] += 1
+        entry["links"] += sum(len(v) for v in (review.get("publish") or {}).values())
+    out = []
+    for key, entry in clients.items():
+        report = performance.build_report(review_list, perf, key, period, lookup)
+        out.append({**entry, "totals": report["totals"], "views_change_pct": report["views_change_pct"],
+                    "updated_at": report["updated_at"], "top_clip": (report["top_clips"] or [None])[0],
+                    "token": _report_token(user, key)})
+    out.sort(key=lambda c: c["totals"]["views"], reverse=True)
+    return jsonify({"period": period, "clients": out, "youtube_api": bool(performance.YOUTUBE_API_KEY)})
+
+
+@app.route("/performance/refresh", methods=["POST"])
+def performance_refresh():
+    """Perbarui angka views (link > 12 jam, atau semua jika force), opsional hanya satu klien: {client?, force?}."""
+    user = _user()
+    _require_admin(user)
+    data = request.get_json(silent=True) or {}
+    root = _owner_root(CLIPS_ROOT, user)
+    links = performance.collect_links(reviews.list_all(root))
+    if data.get("client"):
+        links = [l for l in links if l["client_key"] == data["client"]]
+    result = performance.refresh(root, links, force=bool(data.get("force")), on_snapshot=_snapshot_logger(user.storage_key))
+    return jsonify(result)
+
+
+@app.route("/performance/report", methods=["GET"])
+def performance_report():
+    """Laporan satu klien untuk operator (termasuk skor viral untuk kalibrasi): ?client=&period=YYYY-MM."""
+    user = _user()
+    _require_admin(user)
+    key = request.args.get("client") or ""
+    root = _owner_root(CLIPS_ROOT, user)
+    review_list = reviews.list_all(root)
+    if not any(performance.client_key(r) == key for r in review_list):
+        raise ApiError(404, "Klien tidak ditemukan.")
+    report = performance.build_report(review_list, performance.load(root), key, _period_arg(), _clip_info_lookup(user.storage_key))
+    return jsonify({"report": report, "token": _report_token(user, key)})
+
+
+def _refresh_in_background(storage_key: str, root: str, key: str):
+    """Perbarui angka satu klien di latar (dipakai saat klien membuka laporan), sekali jalan per klien."""
+    job = (storage_key, key)
+    if job in _report_refreshing:
+        return
+    _report_refreshing.add(job)
+
+    def work():
+        try:
+            links = [l for l in performance.collect_links(reviews.list_all(root)) if l["client_key"] == key]
+            performance.refresh(root, links, on_snapshot=_snapshot_logger(storage_key))
+        except Exception as e:
+            print(f"[Performa] Gagal memperbarui di latar: {e!r}")
+        finally:
+            _report_refreshing.discard(job)
+    threading.Thread(target=work, daemon=True).start()
+
+
+@app.route("/report/<token>", methods=["GET"])
+def report_public(token):
+    """Laporan bulanan untuk klien (tanpa login). Angka lama diperbarui di latar; halaman tetap cepat."""
+    gone = ApiError(404, "Laporan tidak ditemukan atau link sudah kedaluwarsa.", "report_gone")
+    try:
+        owner, key = _report_signer.loads(token, max_age=REPORT_LINK_DAYS * 86400)
+    except (BadSignature, ValueError, TypeError):
+        raise gone
+    if not isinstance(owner, str) or (owner and not _is_safe_id(owner)) or not isinstance(key, str):
+        raise gone
+    root = os.path.join(CLIPS_ROOT, owner) if owner else CLIPS_ROOT
+    review_list = reviews.list_all(root)
+    if not any(performance.client_key(r) == key for r in review_list):
+        raise gone
+    period = _period_arg()
+    report = performance.build_report(review_list, performance.load(root), key, period, _clip_info_lookup(owner))
+    for clip in report["top_clips"]:
+        clip.pop("viral_score", None)   # skor internal, tidak untuk klien
+    if report["is_current"]:
+        _refresh_in_background(owner, root, key)
+    seen_key = (token, period)
+    if time.time() - _report_views.get(seen_key, 0) > 30 * 60:
+        _report_views[seen_key] = time.time()
+        telemetry.log(owner, "report_viewed", client_id=key, period=period)
+    return jsonify({"report": report, "refreshing": (owner, key) in _report_refreshing})
+
 
 # ══════════════════════════════════════════════════════════════
 # Video panjang tanpa wajah (16:9): naskah → suara → visual → render

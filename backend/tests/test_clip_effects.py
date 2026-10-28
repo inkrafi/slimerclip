@@ -66,8 +66,12 @@ def test_audio_graph():
     graph = clip_effects.audio_graph(music, 2, [(3, 4.5, 80)], 30, True, "aout")
     assert "[2:a]" in graph and "sidechaincompress" in graph and "adelay=4500|4500" in graph
     assert "amix=inputs=3" in graph and graph.endswith("[aout]")
-    # Tanpa musik & efek: tidak perlu dicampur
-    assert clip_effects.audio_graph(music, None, [], 30, True, "aout") is None
+    assert graph.count("loudnorm") == 1 and "dynaudnorm" in graph   # suara asli selalu dinormalisasi
+    # Tanpa musik & efek: suara asli tetap diratakan levelnya & dinormalisasi
+    plain = clip_effects.audio_graph(music, None, [], 30, True, "aout")
+    assert "dynaudnorm" in plain and "loudnorm=I=-14" in plain and plain.endswith("[aout]")
+    # Tanpa audio sama sekali: tidak ada graph
+    assert clip_effects.audio_graph(music, None, [], 30, False, "aout") is None
     # Video tanpa audio: alas hening + efek suara
     assert "anullsrc" in clip_effects.audio_graph(music, None, [(1, 0, 100)], 30, False, "aout")
 
@@ -191,8 +195,16 @@ def test_prompt_segment_range_and_categories():
     import niche
     from prompt_templates import clip_analysis_schema, get_clip_analysis_prompt
     prompt = get_clip_analysis_prompt(12)
-    assert "MINIMAL 8, maksimal 12" in prompt and "{MIN}" not in prompt
-    assert clip_analysis_schema(12)["properties"]["segments"]["minItems"] == 8
-    assert clip_analysis_schema(6)["properties"]["segments"]["minItems"] == 6
+    assert "maksimal 12 momen (minimal 3)" in prompt and "{" + "MIN}" not in prompt and "{TYPE_BLOCK}" not in prompt
+    assert "30-65 detik" in prompt and "bahasa Indonesia" in prompt
+    assert clip_analysis_schema(12)["properties"]["segments"]["minItems"] == 3
+    assert clip_analysis_schema(2)["properties"]["segments"]["minItems"] == 2
+    # Profil: tipe & bahasa ditentukan admin
+    custom = get_clip_analysis_prompt(5, {"video_type": "gaming", "source_language": "en", "output_language": "same",
+                                          "duration": "short"})
+    assert "STREAMING GAME" in custom and "PODCAST" not in custom and "15-35 detik" in custom
+    assert "berbahasa Inggris" in custom and "BAHASA YANG SAMA" in custom
+    auto = get_clip_analysis_prompt(5)
+    assert "STREAMING GAME" in auto and "PODCAST" in auto      # otomatis: semua panduan tipe disertakan
     assert "category" in clip_analysis_schema(5)["properties"]["segments"]["items"]["required"]
     assert niche.normalize_category(" Investasi ") == "investasi" and niche.normalize_category("gosip") == "lainnya"

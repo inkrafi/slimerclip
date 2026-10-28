@@ -1,6 +1,7 @@
 'use client'
 
 import CreateEntry from '@/components/CreateEntry'
+import { useCopy } from '@/components/LocaleProvider'
 import ScoreMeter from '@/components/ScoreMeter'
 import { useScrollProgress } from '@/hooks/useScrollProgress'
 import { LandingMedia } from '@/hooks/useLandingMedia'
@@ -13,6 +14,21 @@ interface Props {
   note?: string
 }
 
+const COPY = {
+  id: {
+    title: ['Penonton sudah', 'memilih momennya.', 'Kamu tinggal unggah.'],
+    replayed: 'paling sering diputar ulang',
+    lead: 'Aplikasi klip lain menebak pakai AI. SlimerClip membaca bagian yang benar-benar diputar ulang penonton YouTube, lalu memotongnya jadi klip 9:16 yang mengikuti siapa pun yang sedang bicara.',
+    fromLibrary: 'Klip asli dari pustakamu:', strongest: 'Momen terkuat',
+  },
+  en: {
+    title: ['Your viewers already', 'picked the moments.', 'You just post them.'],
+    replayed: 'most replayed',
+    lead: 'Other clipping apps guess with AI. SlimerClip reads the parts YouTube viewers actually replay, then cuts them into 9:16 clips that follow whoever is speaking.',
+    fromLibrary: 'A real clip from your library:', strongest: 'Strongest moment',
+  },
+}
+
 /** Lapisan parallax: bergeser vertikal sebanyak `distance` px saat hero di-scroll keluar. */
 const lift = (distance: number) => ({ transform: `translate3d(0, calc(var(--p, 0) * ${-distance}px), 0)` })
 
@@ -22,14 +38,15 @@ export default function Hero({ media, onSubmit, note }: Props) {
   // Pita thumbnail: video dari riwayat, atau ilustrasi jika riwayat masih kosong
   const strip = ids.length ? [...ids, ...ids, ...ids].slice(0, 8) : Array.from({ length: 8 }, () => undefined)
   const showcase = media.showcase
+  const t = useCopy(COPY)
 
   return (
     <section ref={ref} className="relative grid gap-12 lg:gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] items-center pt-12 md:pt-16 pb-20">
       <div className="relative z-10">
         <h1 className="type-display text-ink text-[clamp(2.2rem,3.7vw,3.6rem)]">
-          <span className="rise">Penonton sudah</span>
-          <span className="rise" style={{ animationDelay: '140ms' }}>memilih momennya.</span>
-          <span className="rise" style={{ animationDelay: '280ms' }}>Kamu tinggal unggah.</span>
+          <span className="rise">{t.title[0]}</span>
+          <span className="rise" style={{ animationDelay: '140ms' }}>{t.title[1]}</span>
+          <span className="rise" style={{ animationDelay: '280ms' }}>{t.title[2]}</span>
         </h1>
 
         {/* Garis waktu di bawah judul: podcast 2 jam, dengan bagian yang paling sering diputar ulang */}
@@ -39,14 +56,13 @@ export default function Hero({ media, onSubmit, note }: Props) {
           </div>
           <div className="mt-1.5 flex justify-between text-xs text-ink-faint timecode">
             <span>0:00</span>
-            <span className="text-ink-muted">paling sering diputar ulang: 1:15:40–1:16:20</span>
+            <span className="text-ink-muted">{t.replayed}: 1:15:40–1:16:20</span>
             <span>2:00:00</span>
           </div>
         </div>
 
         <p className="rise mt-6 max-w-[54ch] text-lg leading-relaxed text-ink-muted" style={{ animationDelay: '520ms' }}>
-          Aplikasi klip lain menebak pakai AI. SlimerClip membaca bagian yang benar-benar diputar ulang
-          penonton YouTube, lalu memotongnya jadi klip 9:16 yang mengikuti siapa pun yang sedang bicara.
+          {t.lead}
         </p>
 
         <div className="rise mt-8 max-w-2xl" style={{ animationDelay: '620ms' }}>
@@ -92,18 +108,18 @@ export default function Hero({ media, onSubmit, note }: Props) {
             )}
           </div>
           {showcase && (
-            <p className="mt-3 text-xs text-ink-muted line-clamp-2">Klip asli dari pustakamu: {showcase.topic || showcase.videoTitle}</p>
+            <p className="mt-3 text-xs text-ink-muted line-clamp-2">{t.fromLibrary} {showcase.topic || showcase.videoTitle}</p>
           )}
         </div>
 
         <div className="absolute left-[4%] bottom-16 rounded-lg border border-rule glass px-4 py-3" style={lift(200)}>
-          <p className="text-xs text-ink-muted">Momen terkuat</p>
+          <p className="text-xs text-ink-muted">{t.strongest}</p>
           <div className="mt-1.5"><ScoreMeter score={92} /></div>
         </div>
 
         <div className="absolute left-0 top-4 max-w-[12rem] rounded-lg border border-rule glass px-3 py-2 text-xs text-ink" style={lift(160)}>
           <span className="timecode font-semibold">31:51–32:48</span>
-          <span className="block text-ink-muted">paling sering diputar ulang</span>
+          <span className="block text-ink-muted">{t.replayed}</span>
         </div>
       </div>
     </section>

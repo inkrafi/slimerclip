@@ -13,17 +13,19 @@ Bobot: 50% AI + 35% penonton + 15% struktur. Jika video belum punya data replay
 import bisect
 import math
 
+import clip_profile
+
 AI_COMPONENTS = {"hook": 30, "emosi": 30, "daya_tarik": 20, "penutup": 20}
 
 WEIGHTS_WITH_AUDIENCE = {"ai": 0.50, "penonton": 0.35, "struktur": 0.15}
 WEIGHTS_WITHOUT_AUDIENCE = {"ai": 0.80, "struktur": 0.20}
 
-SNAP_TOLERANCE = 3.0      # detik: jarak maksimum untuk menempel ke batas kalimat
+SNAP_TOLERANCE = 3.0      # detik: jarak maksimum untuk menempel ke batas baris transkrip
 MIN_CLIP_SECONDS = 10.0
-MIN_DURATION_SECONDS = 45.0  # aturan produk: setiap klip minimal 45 detik (diperpanjang di batas kalimat)
-SHORT_CLIP_SECONDS = MIN_DURATION_SECONDS
-TARGET_MIN_SECONDS = MIN_DURATION_SECONDS
-MAX_CLIP_SECONDS = 90.0
+# Batas durasi mengikuti profil analisis (clip_profile.DURATIONS); default "medium" 30-65 detik
+DEFAULT_BOUNDS = clip_profile.DURATIONS[clip_profile.DEFAULT_PROFILE["duration"]]
+TARGET_MIN_SECONDS = float(DEFAULT_BOUNDS["min"])
+MAX_CLIP_SECONDS = float(DEFAULT_BOUNDS["max"])
 
 
 def to_seconds(time_str) -> float:
@@ -72,22 +74,23 @@ def snap_to_sentences(start: float, end: float, lines: list) -> tuple:
     return new_start, new_end
 
 
-def extend_short(start: float, end: float, lines: list, video_duration: float) -> tuple:
+def extend_short(start: float, end: float, lines: list, video_duration: float,
+                 min_len: float = TARGET_MIN_SECONDS, max_len: float = MAX_CLIP_SECONDS) -> tuple:
     """
-    Momen terlalu pendek untuk dijadikan Short → perpanjang ke akhir kalimat berikutnya
-    sampai minimal TARGET_MIN_SECONDS, agar konteks & payoff ikut masuk.
+    Momen terlalu pendek untuk dijadikan Short → perpanjang ke akhir baris transkrip berikutnya
+    sampai minimal min_len, agar konteks & payoff ikut masuk.
     """
-    if end - start >= SHORT_CLIP_SECONDS:
+    if end - start >= min_len:
         return start, end
-    target = start + TARGET_MIN_SECONDS
+    target = start + min_len
     new_end = next((l[1] for l in lines if l[1] >= target), target)
-    new_end = min(new_end, start + MAX_CLIP_SECONDS)
+    new_end = min(new_end, start + max_len)
     if video_duration:
         new_end = min(new_end, video_duration)
     new_end = max(end, new_end)
     # Dekat akhir video → kekurangannya diambil dari depan (mundur ke awal kalimat)
-    if new_end - start < TARGET_MIN_SECONDS:
-        target_start = max(0.0, new_end - TARGET_MIN_SECONDS)
+    if new_end - start < min_len:
+        target_start = max(0.0, new_end - min_len)
         start = max((l[0] for l in lines if l[0] <= target_start), default=target_start)
     return start, new_end
 
@@ -137,14 +140,25 @@ def audience_score(start: float, end: float, heatmap: list) -> float | None:
     return round(100 * (less + 0.5 * equal) / len(heatmap), 1)
 
 
-def duration_fit(seconds: float) -> float:
-    """Durasi ideal klip SlimerClip: 45–70 detik (minimal 45 detik sesuai aturan produk)."""
-    if 45 <= seconds <= 70:
+def trim_long(start: float, end: float, lines: list, max_len: float) -> tuple:
+    """Momen melebihi batas → akhiri di ujung baris transkrip terakhir yang masih muat."""
+    if end - start <= max_len:
+        return start, end
+    limit = start + max_len
+    fitting = [l[1] for l in lines if start < l[1] <= limit]
+    return start, max(fitting) if fitting else limit
+
+
+def duration_fit(seconds: float, bounds: dict | None = None) -> float:
+    """100 di rentang ideal profil, turun linear sampai 60 di batas minimal/maksimal, 30 di luar itu."""
+    bounds = bounds or DEFAULT_BOUNDS
+    lo, hi = bounds["ideal"]
+    if lo <= seconds <= hi:
         return 100.0
-    if 30 <= seconds < 45:
-        return 60 + (seconds - 30) * (40 / 15)   # 60 → 100
-    if 70 < seconds <= 90:
-        return 100 - (seconds - 70) * 2          # 100 → 60
+    if bounds["min"] <= seconds < lo:
+        return 60 + (seconds - bounds["min"]) * 40 / max(1, lo - bounds["min"])
+    if hi < seconds <= bounds["max"]:
+        return 100 - (seconds - hi) * 40 / max(1, bounds["max"] - hi)
     return 30.0
 
 
@@ -171,8 +185,10 @@ def density_fit(words_per_second: float | None) -> float:
     return _clamp(100 - (words_per_second - 3.5) * 20, 60, 100)
 
 
-def score_segments(segments: list, transcript_lines: list, heatmap: list, video_duration: float) -> list:
-    """Rapikan batas waktu tiap momen dan hitung skor viral akhir beserta rinciannya."""
+def score_segments(segments: list, transcript_lines: list, heatmap: list, video_duration: float,
+                   bounds: dict | None = None) -> list:
+    """Rapikan batas waktu tiap momen (sesuai batas durasi profil) dan hitung skor viral akhir beserta rinciannya."""
+    bounds = bounds or DEFAULT_BOUNDS
     has_audience = bool(heatmap)
     weights = WEIGHTS_WITH_AUDIENCE if has_audience else WEIGHTS_WITHOUT_AUDIENCE
     scored = []
@@ -188,14 +204,15 @@ def score_segments(segments: list, transcript_lines: list, heatmap: list, video_
             continue  # timestamp tidak masuk akal → buang
 
         start, end = snap_to_sentences(start, end, transcript_lines)
-        start, end = extend_short(start, end, transcript_lines, video_duration)
+        start, end = extend_short(start, end, transcript_lines, video_duration, bounds["min"], bounds["max"])
+        start, end = trim_long(start, end, transcript_lines, bounds["max"])
         start, end = math.floor(start), math.ceil(end)
         length = end - start
 
         ai_total, ai_parts = ai_score(seg)
         audience = audience_score(start, end, heatmap)
         wps = speech_density(start, end, transcript_lines)
-        structure = round(0.5 * duration_fit(length) + 0.5 * density_fit(wps), 1)
+        structure = round(0.5 * duration_fit(length, bounds) + 0.5 * density_fit(wps), 1)
 
         final = weights["ai"] * ai_total + weights["struktur"] * structure
         if has_audience:
@@ -219,16 +236,16 @@ def score_segments(segments: list, transcript_lines: list, heatmap: list, video_
         }
         scored.append(seg)
 
-    return drop_overlaps(scored)
+    return drop_overlaps(scored, bounds["min"])
 
 
 OVERLAP_TOLERANCE = 3.0   # detik tumpang tindih yang dibiarkan (sambungan kalimat)
 
 
-def drop_overlaps(segments: list) -> list:
+def drop_overlaps(segments: list, min_len: float = TARGET_MIN_SECONDS) -> list:
     """
     Momen yang tumpang tindih dengan momen berskor lebih tinggi dipangkas ke bagian yang tidak
-    tumpang tindih. Jika sisanya kurang dari TARGET_MIN_SECONDS (isinya praktis sama), momen dibuang.
+    tumpang tindih. Jika sisanya kurang dari min_len (isinya praktis sama), momen dibuang.
     """
     kept = []
     for seg in sorted(segments, key=lambda s: s["viral_score"], reverse=True):
@@ -249,7 +266,7 @@ def drop_overlaps(segments: list) -> list:
                     s0, s1 = (s0, o0) if o0 - s0 >= s1 - o1 else (o1, s1)
                 changed = True
         trimmed = (s0, s1) != orig
-        if trimmed and s1 - s0 < TARGET_MIN_SECONDS:
+        if trimmed and s1 - s0 < min_len:
             continue
         if trimmed:
             seg = dict(seg, start_time=to_mmss(s0), end_time=to_mmss(s1), duration_seconds=int(s1 - s0))

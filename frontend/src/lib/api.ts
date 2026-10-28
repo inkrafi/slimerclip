@@ -1,5 +1,5 @@
 import {
-  AnalysisResult, ClipGenerateOptions, ClipThumbnail, EditRecipe, EditTemplate, EditorAsset, EditorData, LongformBrand, LongformData, LongformProject, Me, TopicIdea, TopicProjectSummary, NicheSetting, RenderJob, StockVisual, RenderOptions, RenderedClip, Segment,
+  AnalysisResult, ClientPreset, PerformanceClient, PerformanceReport, PublicReview, ReviewDecision, ReviewLink, ReviewPublishLink, ReviewSummary, ClipGenerateOptions, ClipProfile, ClipProfileOptions, ClipThumbnail, EditRecipe, EditTemplate, EditorAsset, EditorData, LongformBrand, LongformData, LongformProject, Me, TopicIdea, TopicProjectSummary, NicheSetting, RenderJob, StockVisual, RenderOptions, RenderedClip, Segment,
   TranscriptSegment, UploadedFileInfo, VideoDetail, VideoSummary,
 } from '@/lib/types'
 import { accessToken } from '@/lib/supabase'
@@ -72,13 +72,38 @@ export const getClips = (videoId: string) =>
 export const deleteVideo = (videoId: string) =>
   request<{ message: string }>(`/videos/${encodeURIComponent(videoId)}`, { method: 'DELETE' })
 
-/** Analisis video. Jika sudah pernah dianalisis, hasil tersimpan dipakai (kecuali force). */
-export const analyzeVideo = (youtubeUrl: string, force = false) =>
+/**
+ * Analisis video. Jika sudah pernah dianalisis, hasil tersimpan dipakai (kecuali force).
+ * profile (admin): hasil tersimpan dengan profil lain dianalisis ulang; diabaikan untuk pengguna biasa.
+ */
+export const analyzeVideo = (youtubeUrl: string, force = false, profile?: ClipProfile) =>
   request<AnalysisResult>('/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ youtube_url: youtubeUrl, force_refresh: force }),
+    body: JSON.stringify({ youtube_url: youtubeUrl, force_refresh: force, ...(profile ? { profile } : {}) }),
   })
+
+export const getClientPresets = () => request<{ presets: ClientPreset[] }>('/client-presets').then(r => r.presets)
+
+export const saveClientPreset = (body: { name: string; profile: ClipProfile; template_id: string }) =>
+  request<{ preset: ClientPreset }>('/client-presets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.preset)
+
+export const deleteClientPreset = (id: string) =>
+  request<{ message: string }>(`/client-presets/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+let profileOptions: Promise<ClipProfileOptions> | null = null
+/** Pilihan profil analisis (admin); dimuat sekali per sesi */
+export const getClipProfileOptions = () => {
+  profileOptions ??= request<ClipProfileOptions>('/clip-profile').catch(e => {
+    profileOptions = null
+    throw e
+  })
+  return profileOptions
+}
 
 /** Mulai render di belakang layar; hasilnya job yang progresnya dipantau lewat getJobs. */
 export const startRender = (youtubeUrl: string, segments: Segment[], options: ClipGenerateOptions) =>
@@ -193,6 +218,14 @@ export const uploadAsset = (file: File) => {
 export const deleteAsset = (name: string) =>
   request<{ message: string }>(`/assets/${encodeURIComponent(name)}`, { method: 'DELETE' })
 
+/** Tandai suasana musik upload ('' = hapus tanda, kembali ke tebakan dari nama file) */
+export const setAssetMood = (name: string, mood: string) =>
+  request<{ asset: EditorAsset }>(`/assets/${encodeURIComponent(name)}/mood`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mood }),
+  }).then(r => r.asset)
+
 /** Ubah judul klip (nama file unduhan) tanpa render ulang; kosong = kembali ke judul saran. */
 export const saveClipTitle = (videoId: string, key: string, title: string) =>
   request<{ title: string }>(`/videos/${encodeURIComponent(videoId)}/clip-title`, {
@@ -232,6 +265,63 @@ export const deleteTemplate = (id: string) =>
   request<{ message: string }>(`/edit-templates/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
 /** Tautan unduh untuk URL klip (memaksa browser menyimpan file, bukan memutarnya). */
+// ── Performa klip & laporan bulanan ──
+const periodQuery = (period?: string) => (period ? `period=${encodeURIComponent(period)}` : '')
+
+export const getPerformanceClients = (period?: string) =>
+  request<{ period: string; clients: PerformanceClient[]; youtube_api: boolean }>(`/performance/clients?${periodQuery(period)}`)
+
+export const refreshPerformance = (client?: string, force = false) =>
+  request<{ updated: number; failed: number; skipped: number }>('/performance/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client, force }),
+  })
+
+export const getPerformanceReport = (client: string, period?: string) =>
+  request<{ report: PerformanceReport; token: string }>(`/performance/report?client=${encodeURIComponent(client)}&${periodQuery(period)}`)
+
+export const getPublicReport = (token: string, period?: string) =>
+  request<{ report: PerformanceReport; refreshing: boolean }>(`/report/${encodeURIComponent(token)}?${periodQuery(period)}`)
+
+/** Alamat halaman laporan untuk klien (di frontend), dari token */
+export const reportPageUrl = (token: string) =>
+  `${typeof window !== 'undefined' ? window.location.origin : ''}/lapor/${encodeURIComponent(token)}`
+
+// ── Link review per klien ──
+export const createReview = (body: { client_name: string; title?: string; note?: string; preset_id?: string; items: { video_id: string; key: string }[] }) =>
+  request<{ review: ReviewLink }>('/reviews', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.review)
+
+export const listReviews = (videoId?: string) =>
+  request<{ reviews: ReviewLink[] }>(`/reviews${videoId ? `?video_id=${encodeURIComponent(videoId)}` : ''}`).then(r => r.reviews)
+
+export const deleteReview = (id: string) =>
+  request<{ message: string }>(`/reviews/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+/** Alamat halaman review untuk klien (di frontend), dari token */
+export const reviewPageUrl = (token: string) =>
+  `${typeof window !== 'undefined' ? window.location.origin : ''}/r/${encodeURIComponent(token)}`
+
+export const getPublicReview = (token: string) => request<PublicReview>(`/review/${encodeURIComponent(token)}`)
+
+export const decideReviewClip = (token: string, body: { video_id: string; key: string; status: ReviewDecision['status']; reason?: string; note?: string }) =>
+  request<{ decision: ReviewDecision; summary: ReviewSummary }>(`/review/${encodeURIComponent(token)}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+
+export const publishReviewClip = (token: string, body: { video_id: string; key: string; url: string }) =>
+  request<{ publish: ReviewPublishLink[]; summary: ReviewSummary }>(`/review/${encodeURIComponent(token)}/publish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+
 export const downloadUrl = (url: string) => `${url}${url.includes('?') ? '&' : '?'}download=1`
 
 export const ALLOWED_VIDEO_EXTS = ['.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v', '.flv']

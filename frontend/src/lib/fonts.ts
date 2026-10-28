@@ -3,7 +3,7 @@ import { Onest, Plus_Jakarta_Sans, Syne } from 'next/font/google'
 // Plus Jakarta Sans (dirancang studio tipografi Jakarta) untuk judul: tegas tapi mudah dibaca
 export const jakarta = Plus_Jakarta_Sans({
   subsets: ['latin'],
-  weight: ['600', '700', '800'],
+  weight: ['600', '700'],
   variable: '--font-jakarta',
 })
 

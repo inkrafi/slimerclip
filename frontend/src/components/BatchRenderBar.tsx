@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Archive, Loader2, Play } from 'lucide-react'
 import { toast } from 'sonner'
 import { getJob, getJobs, getTemplates, isJobActive, renderAll, RENDER_STARTED_EVENT } from '@/lib/api'
+import { useActivePreset } from '@/lib/clipProfile'
 import type { EditTemplate, RenderJob } from '@/lib/types'
 
 interface Props {
@@ -19,13 +20,18 @@ interface Props {
 export default function BatchRenderBar({ videoId, clipCount, zipUrl, onDone }: Props) {
   const [templates, setTemplates] = useState<EditTemplate[] | null>(null)
   const [templateId, setTemplateId] = useState('')
+  const activePreset = useActivePreset()
+  const activeTemplateRef = useRef(activePreset?.template_id ?? '')
+  useEffect(() => { activeTemplateRef.current = activePreset?.template_id ?? '' }, [activePreset])
   const [job, setJob] = useState<RenderJob | null>(null)
   const [starting, setStarting] = useState(false)
 
   useEffect(() => {
     getTemplates().then(items => {
       setTemplates(items)
-      setTemplateId(items[0]?.id ?? '')
+      // Klien yang sedang dikerjakan (preset aktif) → format edit-nya jadi pilihan awal
+      const preferred = activeTemplateRef.current
+      setTemplateId(items.some(t => t.id === preferred) ? preferred : items[0]?.id ?? '')
     }).catch(() => setTemplates([]))
     // Render semua yang masih berjalan (mis. setelah halaman dimuat ulang)
     getJobs(videoId).then(items => {

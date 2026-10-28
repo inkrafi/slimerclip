@@ -48,17 +48,29 @@ def _load_cached(video_id: str) -> list | None:
         return None
 
 
-def _save_cached(video_id: str, lines: list, source: str):
+def _cached_language(video_id: str) -> str | None:
+    try:
+        with open(_cache_path(video_id), encoding="utf-8") as f:
+            return json.load(f).get("lang")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _base_lang(code) -> str:
+    return str(code or "").lower().split("-")[0]
+
+
+def _save_cached(video_id: str, lines: list, source: str, lang: str | None = None):
     tmp = _cache_path(video_id) + ".tmp"
     with _cache_lock:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"source": source, "lines": lines}, f, ensure_ascii=False)
+            json.dump({"source": source, "lang": lang, "lines": lines}, f, ensure_ascii=False)
         os.replace(tmp, _cache_path(video_id))
 
 
 # ── 1. youtube-transcript-api ────────────────────────────────
 
-def _transcript_api(video_id: str) -> list:
+def _transcript_api(video_id: str, language: str | None = None) -> tuple[list, str | None]:
     session = Session()
     # Verifikasi SSL tetap aktif. Hanya jika muncul SSLError (mis. antivirus/proxy yang
     # mengintersep HTTPS), bisa dimatikan sementara dengan TRANSCRIPT_INSECURE_SSL=1 di .env.
@@ -76,35 +88,37 @@ def _transcript_api(video_id: str) -> list:
 
     transcript_list = YouTubeTranscriptApi(proxy_config=proxy_config, http_client=session).list(video_id)
 
+    # Bahasa pilihan (profil) atau id/en → caption otomatis (= bahasa asli audio) → apa pun.
+    # Tidak memakai terjemahan otomatis YouTube: kutipan verbatim dan timing-nya jadi tidak akurat.
+    wanted = [language] if language else list(PREFERRED_LANGS)
+
     def pick():
         try:
-            return transcript_list.find_transcript(list(PREFERRED_LANGS)).fetch()
+            t = transcript_list.find_transcript(wanted)
+            return t.fetch(), t.language_code
         except NoTranscriptFound:
             pass
-        for t in transcript_list:
-            if t.is_translatable:
-                for lang in PREFERRED_LANGS:
-                    try:
-                        return t.translate(lang).fetch()
-                    except Exception:
-                        continue
-        for t in transcript_list:
-            return t.fetch()
-        raise NoTranscriptFound(video_id, list(PREFERRED_LANGS), transcript_list)
+        for t in sorted(transcript_list, key=lambda t: not t.is_generated):
+            return t.fetch(), t.language_code
+        raise NoTranscriptFound(video_id, wanted, transcript_list)
 
+    fetched, lang = pick()
     lines = []
-    for item in pick():
+    for item in fetched:
         start, text = getattr(item, 'start', None), getattr(item, 'text', None)
         if start is None or not text:
             continue
         lines.append((float(start), float(start + (getattr(item, 'duration', 0) or 0)), text.replace("\n", " ")))
-    return lines
+    return lines, lang
 
 
 # ── 2. Subtitle lewat yt-dlp ─────────────────────────────────
 
-def _pick_caption_track(info: dict) -> tuple[str, str] | None:
-    """Pilih URL json3: subtitle manual id/en → auto-caption bahasa asli → auto id/en → manual apa pun."""
+def _pick_caption_track(info: dict, language: str | None = None) -> tuple[str, str] | None:
+    """
+    Pilih URL json3: bahasa pilihan (profil) dulu, lalu subtitle manual id/en → auto-caption bahasa asli
+    → auto id/en → manual apa pun.
+    """
     manual = info.get("subtitles") or {}
     auto = info.get("automatic_captions") or {}
 
@@ -119,7 +133,10 @@ def _pick_caption_track(info: dict) -> tuple[str, str] | None:
     orig = sorted((lang for lang in auto if lang.endswith("-orig")),
                   key=lambda lang: (lang.split("-")[0] != video_lang, lang.split("-")[0] not in PREFERRED_LANGS))
 
-    candidates = [(manual, lang) for lang in PREFERRED_LANGS]
+    candidates = []
+    if language:
+        candidates += [(manual, language), (auto, f"{language}-orig"), (auto, language)]
+    candidates += [(manual, lang) for lang in PREFERRED_LANGS]
     candidates += [(auto, lang) for lang in orig]
     candidates += [(auto, lang) for lang in PREFERRED_LANGS]
     candidates += [(manual, lang) for lang in manual if lang != "live_chat"]
@@ -130,13 +147,13 @@ def _pick_caption_track(info: dict) -> tuple[str, str] | None:
     return None
 
 
-def _ytdlp_captions(youtube_url: str, info: dict | None) -> list:
+def _ytdlp_captions(youtube_url: str, info: dict | None, language: str | None = None) -> tuple[list, str]:
     opts = {'quiet': True, 'no_warnings': True, 'noplaylist': True, 'skip_download': True,
             'socket_timeout': 15, 'js_runtimes': YTDLP_JS_RUNTIMES}
     with yt_dlp.YoutubeDL(opts) as ydl:
         if info is None:
             info = ydl.extract_info(youtube_url, download=False) or {}
-        track = _pick_caption_track(info)
+        track = _pick_caption_track(info, language)
         if not track:
             raise TranscriptUnavailable("Video ini tidak punya subtitle.")
         lang, url = track
@@ -150,12 +167,13 @@ def _ytdlp_captions(youtube_url: str, info: dict | None) -> list:
             continue
         start = ev["tStartMs"] / 1000
         lines.append((start, start + (ev.get("dDurationMs") or 0) / 1000, re.sub(r"\s+", " ", text)))
-    return lines
+    return lines, _base_lang(lang)
 
 
 # ── 3. Whisper lokal ─────────────────────────────────────────
 
-def _whisper(youtube_url: str, video_id: str, media_path: str | None, allow_download: bool) -> list:
+def _whisper(youtube_url: str, video_id: str, media_path: str | None, allow_download: bool,
+             language: str | None = None) -> tuple[list, str | None]:
     from caption_service import get_caption_service
     from download_service import download_video, find_cached_video
 
@@ -166,13 +184,15 @@ def _whisper(youtube_url: str, video_id: str, media_path: str | None, allow_down
         print("[Transcript] Download video untuk ditranskrip Whisper (sekalian dipakai saat render)")
         path = download_video(youtube_url, video_id=video_id)
     print(f"[Transcript] Transkripsi Whisper lokal: {os.path.basename(path)} (video panjang bisa makan waktu beberapa menit)")
-    return [(s['start'], s['end'], s['text'].strip()) for s in get_caption_service().transcribe_plain(path) if s['text'].strip()]
+    segments, lang = get_caption_service().transcribe_plain(path, language)
+    return [(s['start'], s['end'], s['text'].strip()) for s in segments if s['text'].strip()], lang
 
 
 # ── Jalur utama ──────────────────────────────────────────────
 
 def get_transcript_lines(video_id: str, youtube_url: str, info: dict | None = None,
-                         media_path: str | None = None, allow_download: bool = False) -> tuple[list, str]:
+                         media_path: str | None = None, allow_download: bool = False,
+                         language: str | None = None) -> tuple[list, str]:
     """
     Return ([(start_detik, end_detik, teks), ...] urut waktu, sumber).
 
@@ -180,26 +200,29 @@ def get_transcript_lines(video_id: str, youtube_url: str, info: dict | None = No
     untuk mengunduh video dari YouTube lebih dulu.
     """
     cached = _load_cached(video_id)
-    if cached:
+    cached_lang = _cached_language(video_id)
+    # Bahasa dipilih admin tapi transkrip tersimpan berbahasa lain → ambil ulang
+    if cached and not (language and cached_lang and _base_lang(cached_lang) != language):
         return cached, "cache"
 
-    attempts = [("youtube-transcript-api", lambda: _transcript_api(video_id)),
-                ("yt-dlp", lambda: _ytdlp_captions(youtube_url, info))]
+    attempts = [("youtube-transcript-api", lambda: _transcript_api(video_id, language)),
+                ("yt-dlp", lambda: _ytdlp_captions(youtube_url, info, language))]
     whisper_possible = WHISPER_FALLBACK and (media_path or allow_download)
     if whisper_possible:
-        attempts.append(("whisper", lambda: _whisper(youtube_url, video_id, media_path, allow_download)))
+        attempts.append(("whisper", lambda: _whisper(youtube_url, video_id, media_path, allow_download, language)))
 
     errors = []
     for source, fetch in attempts:
         try:
-            lines = sorted(fetch(), key=lambda l: l[0])
+            fetched, lang = fetch()
+            lines = sorted(fetched, key=lambda l: l[0])
         except Exception as e:
             first_line = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
             print(f"[Transcript] {source} gagal: {type(e).__name__}: {first_line[:200]}")
             errors.append((source, e))
             continue
         if lines:
-            _save_cached(video_id, lines, source)
+            _save_cached(video_id, lines, source, _base_lang(lang) or None)
             print(f"[Transcript] Berhasil lewat {source} ({len(lines)} baris)")
             return lines, source
         errors.append((source, TranscriptUnavailable("transkrip kosong")))

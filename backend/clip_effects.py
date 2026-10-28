@@ -23,16 +23,43 @@ import re
 ASSETS_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 # Efek suara bawaan (disintesis sendiri oleh tools/make_sfx.py, bebas lisensi)
 SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx")
-SFX_LIBRARY = {
-    "lib_whoosh.wav": "Whoosh",
-    "lib_swipe.wav": "Swipe cepat",
-    "lib_pop.wav": "Pop",
-    "lib_ding.wav": "Ding",
-    "lib_notif.wav": "Notifikasi",
-    "lib_boom.wav": "Boom",
-    "lib_riser.wav": "Riser (naik tegang)",
-    "lib_click.wav": "Klik",
-    "lib_applause.wav": "Tepuk tangan",
+# Pustaka efek suara bawaan (disintesis tools/make_sfx.py, bebas lisensi), per kategori
+SFX_GROUPS = {
+    "Transisi": [
+        ("lib_whoosh.wav", "Whoosh"), ("lib_whoosh_deep.wav", "Whoosh berat"), ("lib_swipe.wav", "Swipe cepat"),
+        ("lib_glitch.wav", "Glitch"), ("lib_reverse.wav", "Reverse swell"), ("lib_tape_stop.wav", "Tape stop"),
+        ("lib_zoom_in.wav", "Zoom in"),
+    ],
+    "Penekanan": [
+        ("lib_boom.wav", "Boom"), ("lib_bass_drop.wav", "Bass drop"), ("lib_impact.wav", "Impact sinematik"),
+        ("lib_dun_dun.wav", "Dun dun (dramatis)"), ("lib_riser.wav", "Riser (naik tegang)"), ("lib_suspense.wav", "Suspense"),
+        ("lib_heartbeat.wav", "Detak jantung"), ("lib_tick_tock.wav", "Tik tok jam"), ("lib_drum_roll.wav", "Drum roll"),
+        ("lib_shutter.wav", "Jepret kamera"), ("lib_gong.wav", "Gong"),
+    ],
+    "Lucu": [
+        ("lib_rimshot.wav", "Ba-dum-tss"), ("lib_boing.wav", "Boing"), ("lib_sad_trombone.wav", "Wah wah wah (gagal)"),
+        ("lib_slide_down.wav", "Peluit turun"), ("lib_scratch.wav", "Piringan berhenti"), ("lib_honk.wav", "Klakson badut"),
+        ("lib_crickets.wav", "Krik krik (garing)"), ("lib_bubble.wav", "Gelembung"), ("lib_pop.wav", "Pop"),
+        ("lib_applause.wav", "Tepuk tangan"),
+    ],
+    "Notifikasi": [
+        ("lib_ding.wav", "Ding"), ("lib_ka_ching.wav", "Ka-ching (uang)"), ("lib_correct.wav", "Jawaban benar"),
+        ("lib_wrong.wav", "Salah (buzzer)"), ("lib_notif.wav", "Notifikasi"), ("lib_level_up.wav", "Level up"),
+        ("lib_sparkle.wav", "Kilau"), ("lib_click.wav", "Klik"), ("lib_typing.wav", "Mengetik"), ("lib_beep.wav", "Bip sensor"),
+    ],
+    "Suasana": [("lib_thunder.wav", "Petir"), ("lib_wind.wav", "Angin")],
+}
+SFX_LIBRARY = {name: label for items in SFX_GROUPS.values() for name, label in items}
+SFX_GROUP_OF = {name: group for group, items in SFX_GROUPS.items() for name, _ in items}
+
+# Musik latar bawaan (disintesis tools/make_music.py, bebas lisensi): nama file → (label, suasana)
+MUSIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music")
+MUSIC_LIBRARY = {
+    "bgm_santai.m4a": ("Santai (lo-fi)", "santai"),
+    "bgm_semangat.m4a": ("Semangat", "semangat"),
+    "bgm_tegang.m4a": ("Tegang / serius", "tegang"),
+    "bgm_lucu.m4a": ("Lucu / ceria", "lucu"),
+    "bgm_dramatis.m4a": ("Dramatis / haru", "dramatis"),
 }
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -69,6 +96,10 @@ DEFAULT_EDIT = {
     },
     "music": {"asset": "", "volume": 35, "ducking": True},
     "sfx": [],
+    # Suara asli: volume (100 = normal setelah dinormalisasi) & penjernih (potong dengung, kurangi desis, perjelas vokal)
+    "voice": {"volume": 100, "clean": False},
+    # Video: penajaman + kontras/warna sedikit naik + kurangi noise (resep lama tanpa field ini = mati)
+    "enhance": {"video": False},
     "hook": {"enabled": False, "text": "", "label": "", "duration": 4, "style": "spotlight", "anim": "cut",
              "accent": "pink", "font": "montserrat", "size": 110, "position_y": 50, "shade": 85},
 }
@@ -88,11 +119,13 @@ def _num(value, default, lo, hi):
 
 
 def asset_path(assets_dir: str, name) -> str | None:
-    """Path file aset: pustaka efek suara bawaan (lib_*) atau aset milik pengguna."""
+    """Path file aset: pustaka efek suara (lib_*) / musik (bgm_*) bawaan, atau aset milik pengguna."""
     if not name:
         return None
     if name in SFX_LIBRARY:
         path = os.path.join(SFX_DIR, name)
+    elif name in MUSIC_LIBRARY:
+        path = os.path.join(MUSIC_DIR, name)
     elif assets_dir:
         path = os.path.join(assets_dir, name)
     else:
@@ -165,6 +198,8 @@ def sanitize_edit(raw, default_start: float, default_end: float, video_duration:
 
     music = raw.get("music") if isinstance(raw.get("music"), dict) else {}
     d_music = DEFAULT_EDIT["music"]
+    voice = raw.get("voice") if isinstance(raw.get("voice"), dict) else {}
+    enhance = raw.get("enhance") if isinstance(raw.get("enhance"), dict) else {}
 
     sfx = []
     for item in (raw.get("sfx") if isinstance(raw.get("sfx"), list) else [])[:MAX_SFX]:
@@ -204,12 +239,14 @@ def sanitize_edit(raw, default_start: float, default_end: float, video_duration:
         "vignette": vignette,
         "marks": marks,
         "music": {
-            "asset": _asset_name(music.get("asset"), "audio"),
+            "asset": music.get("asset") if music.get("asset") in MUSIC_LIBRARY else _asset_name(music.get("asset"), "audio"),
             "volume": int(_num(music.get("volume"), d_music["volume"], 0, 100)),
             "ducking": bool(music.get("ducking", d_music["ducking"])),
         },
         "sfx": sfx,
         "hook": hook_clean,
+        "voice": {"volume": int(_num(voice.get("volume"), 100, 0, 200)), "clean": bool(voice.get("clean", False))},
+        "enhance": {"video": bool(enhance.get("video", False))},
     }
 
 
@@ -269,8 +306,10 @@ def apply_template(edit: dict, style: dict, hook_text: str, has_asset, source_te
     if source_text is not None:
         marks["source"]["text"] = source_text
     music = dict(style["music"])
-    if music["asset"] and not has_asset(music["asset"]):
+    if music["asset"] and music["asset"] not in MUSIC_LIBRARY and not has_asset(music["asset"]):
         music["asset"] = ""
+    if not music["asset"]:   # format tanpa musik → musik klip (mis. hasil edit otomatis) tetap dipakai
+        music = dict(edit.get("music") or music)
     hook = {**style["hook"], "text": hook_text, "enabled": style["hook"]["enabled"] and bool(hook_text)}
     return {**edit, "vignette": dict(style["vignette"]), "marks": marks, "music": music, "hook": hook}
 
@@ -635,20 +674,41 @@ def hook_ass(hook: dict, duration: float, font_family: str) -> str | None:
 # ── Audio ────────────────────────────────────────────────────
 
 NORM = "aformat=sample_rates=48000:channel_layouts=stereo"
+# Suara asli: dynaudnorm meratakan level antar pembicara (mic dekat vs jauh; jendela ±8 detik, penguatan maks 6x,
+# bagian nyaris hening tidak dikuatkan agar noise tidak naik), lalu loudnorm ke -14 LUFS (level normal Shorts/TikTok).
+SPEECH_NORM = "dynaudnorm=f=250:g=31:p=0.9:m=6:t=0.003,loudnorm=I=-14:TP=-1.5:LRA=9"
+# Penjernih suara: buang dengung <80 Hz, kurangi desis/noise latar, sedikit penekanan di frekuensi kejelasan vokal
+VOICE_CLEAN = "highpass=f=80,afftdn=nr=12:nf=-40:tn=1,equalizer=f=3200:t=q:w=1.2:g=2.5"
+# Video lebih jernih & "HD": kurangi noise ringan, kontras/warna sedikit naik, penajaman
+VIDEO_ENHANCE = "hqdn3d=1.5:1.5:6:6,eq=contrast=1.05:saturation=1.1,unsharp=5:5:0.8:5:5:0"
+
+
+def speech_chain(voice: dict | None) -> str:
+    """Filter suara asli: (penjernih) → perata level antar pembicara + loudness → volume pilihan."""
+    voice = voice or {}
+    parts = [VOICE_CLEAN] if voice.get("clean") else []
+    parts.append(SPEECH_NORM)
+    volume = voice.get("volume", 100)
+    if volume != 100:
+        parts.append(f"volume={volume / 100:.2f}")
+        if volume > 100:
+            parts.append("alimiter=limit=0.95")   # cegah pecah saat dikeraskan
+    return ",".join(parts)
 
 
 def audio_graph(music: dict | None, music_index: int | None, sfx: list, duration: float, has_speech: bool,
-                dst: str) -> str | None:
+                dst: str, voice: dict | None = None) -> str | None:
     """
-    Campuran audio: suara asli + musik latar (diulang, fade, ducking) + efek suara di detik tertentu.
-    sfx: [(input_index, offset_detik, volume 0–100)]. Return None jika tidak ada yang perlu dicampur.
+    Campuran audio: suara asli (dinormalisasi) + musik latar (diulang, fade, ducking) + efek suara di detik tertentu.
+    sfx: [(input_index, offset_detik, volume 0–100)]. Return None jika tidak ada audio sama sekali.
     """
-    if music_index is None and not sfx:
+    if music_index is None and not sfx and not has_speech:
         return None
     parts, mix = [], []
     if has_speech:
-        parts.append(f"[0:a]{NORM},asplit=2[speech][side]" if music_index is not None and music["ducking"]
-                     else f"[0:a]{NORM}[speech]")
+        chain = speech_chain(voice)
+        parts.append(f"[0:a]{NORM},{chain},asplit=2[speech][side]" if music_index is not None and music["ducking"]
+                     else f"[0:a]{NORM},{chain}[speech]")
         mix.append("[speech]")
     if music_index is not None:
         gain = music["volume"] / 100  # 35% ≈ -9 dB dari level asli musik

@@ -1,5 +1,7 @@
 'use client'
 
+import { useCopy } from '@/components/LocaleProvider'
+
 import { Suspense, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -33,9 +35,7 @@ function Inner({ children, allowSignedIn = false }: AuthRouteProps) {
   if (!enabled) {
     return (
       <div className="pt-16 max-w-md">
-        <h1 className="type-heading text-3xl text-ink">Login tidak aktif</h1>
-        <p className="mt-2 text-ink-muted">Aplikasi berjalan dalam mode lokal, jadi semua fitur sudah bisa dipakai tanpa masuk.</p>
-        <Link href={next} className="mt-6 btn btn-primary">Lanjutkan</Link>
+        <LocalMode next={next} />
       </div>
     )
   }
@@ -45,3 +45,19 @@ function Inner({ children, allowSignedIn = false }: AuthRouteProps) {
 /** URL kembali dari email (konfirmasi akun / atur ulang kata sandi). */
 export const emailRedirect = (next: string) =>
   `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`
+
+const LOCAL_COPY = {
+  id: { title: 'Login tidak aktif', body: 'Aplikasi berjalan dalam mode lokal, jadi semua fitur sudah bisa dipakai tanpa masuk.', go: 'Lanjutkan' },
+  en: { title: 'Sign-in is off', body: 'The app runs in local mode, so every feature works without signing in.', go: 'Continue' },
+}
+
+function LocalMode({ next }: { next: string }) {
+  const t = useCopy(LOCAL_COPY)
+  return (
+    <>
+      <h1 className="type-heading text-3xl text-ink">{t.title}</h1>
+      <p className="mt-2 text-ink-muted">{t.body}</p>
+      <Link href={next} className="mt-6 btn btn-primary">{t.go}</Link>
+    </>
+  )
+}

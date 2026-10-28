@@ -89,9 +89,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(A, "ANALYSIS_CACHE_FILE", str(tmp_path / "analysis_cache.json"))
     calls = []
 
-    def fake_analyze(url, api_key=None, media_path=None, allow_download=False):
-        calls.append({"url": url, "api_key": api_key, "media_path": media_path, "allow_download": allow_download})
-        return fake_result()
+    def fake_analyze(url, api_key=None, media_path=None, allow_download=False, profile=None):
+        calls.append({"url": url, "api_key": api_key, "media_path": media_path, "allow_download": allow_download,
+                      "profile": profile})
+        return {**fake_result(), "profile": profile}
 
     monkeypatch.setattr(A, "analyze_youtube_video", fake_analyze)
     monkeypatch.setattr(A, "validate_api_key", lambda key: None if key.startswith("AIza") else "ditolak")
@@ -727,3 +728,169 @@ def test_longform_recommended_ideas_are_cached(env, monkeypatch):
     assert len(calls) == 6
     # File cache tidak muncul sebagai proyek
     assert c.get("/longform/topics", headers=h).json["projects"] == []
+
+
+def test_admin_profile_changes_trigger_new_analysis(env):
+    """Profil hanya untuk admin; profil berbeda dari hasil cache → analisis ulang, profil sama → cache."""
+    import clip_profile
+    c, calls = env["client"], env["calls"]
+    admin, user = token("admin@example.com"), token("biasa@example.com")
+    url = "https://www.youtube.com/watch?v=abcdefghijk"
+    english = {"source_language": "en", "output_language": "id", "subtitle_language": "id", "video_type": "presentation",
+               "clip_count": 5, "duration": "short"}
+
+    assert c.post("/analyze", headers=user, json={"youtube_url": url, "profile": english}).status_code == 200
+    assert calls[-1]["profile"] == clip_profile.DEFAULT_PROFILE      # pengguna biasa: profil diabaikan
+    n = len(calls)
+    assert c.post("/analyze", headers=admin, json={"youtube_url": url, "profile": english}).status_code == 200
+    assert len(calls) == n + 1 and calls[-1]["profile"] == english
+    assert c.post("/analyze", headers=admin, json={"youtube_url": url, "profile": english}).json["from_cache"] is True
+    assert c.post("/analyze", headers=user, json={"youtube_url": url}).json["from_cache"] is True
+    assert len(calls) == n + 1
+
+    assert c.get("/clip-profile", headers=user).status_code == 403
+    opts = c.get("/clip-profile", headers=admin).json
+    assert {"languages", "video_types", "durations", "clip_counts", "default"} <= set(opts)
+
+
+def test_client_presets_admin_only(env):
+    c = env["client"]
+    admin, user = token("admin@example.com"), token("biasa@example.com")
+    assert c.get("/client-presets", headers=user).status_code == 403
+    assert c.post("/client-presets", headers=admin, json={"name": " "}).status_code == 400
+    assert c.post("/client-presets", headers=admin, json={"name": "Klien A", "template_id": "abcdef123456"}).status_code == 400
+    res = c.post("/client-presets", headers=admin, json={"name": "Klien A", "profile": {
+        "source_language": "en", "output_language": "same", "video_type": "gaming", "clip_count": 10, "duration": "short",
+        "evil": "x"}})
+    assert res.status_code == 201
+    preset = res.json["preset"]
+    assert preset["profile"] == {"source_language": "en", "output_language": "same", "subtitle_language": "same",
+                                 "video_type": "gaming", "clip_count": 10, "duration": "short"}
+    # Nama sama (beda huruf besar) menimpa preset lama
+    again = c.post("/client-presets", headers=admin, json={"name": "klien a", "profile": {}}).json["preset"]
+    assert again["id"] == preset["id"]
+    assert [p["id"] for p in c.get("/client-presets", headers=admin).json["presets"]] == [preset["id"]]
+    assert c.delete(f"/client-presets/{preset['id']}", headers=admin).status_code == 200
+    assert c.get("/client-presets", headers=admin).json["presets"] == []
+
+
+def test_asset_mood_tagging(env):
+    c = env["client"]
+    admin = token("admin@example.com")
+    import io, math, struct, wave as w
+    buf = io.BytesIO()
+    with w.open(buf, "wb") as f:
+        f.setnchannels(1); f.setsampwidth(2); f.setframerate(8000)
+        f.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(i / 5))) for i in range(8000)))
+    res = c.post("/assets", headers=admin, data={"file": (io.BytesIO(buf.getvalue()), "lofi_chill.wav")},
+                 content_type="multipart/form-data")
+    assert res.status_code == 201, res.json
+    asset = res.json["asset"]
+    assert asset["mood"] == "santai" and asset["mood_source"] == "name"
+    name = asset["name"]
+    assert c.put(f"/assets/{name}/mood", headers=admin, json={"mood": "marah"}).status_code == 400
+    tagged = c.put(f"/assets/{name}/mood", headers=admin, json={"mood": "dramatis"}).json["asset"]
+    assert tagged["mood"] == "dramatis" and tagged["mood_source"] == "tag"
+    listed = next(a for a in c.get("/assets", headers=admin).json["assets"] if a["name"] == name)
+    assert listed["mood"] == "dramatis"
+    assert c.put(f"/assets/{name}/mood", headers=admin, json={"mood": ""}).json["asset"]["mood_source"] == "name"
+    assert c.delete(f"/assets/{name}", headers=admin).status_code == 200
+
+
+def test_review_link_flow(env, monkeypatch):
+    import reviews as R
+    import telemetry as T
+    monkeypatch.setattr(T, "TELEMETRY_DIR", str(env["tmp"] / "telemetry"))
+    c = env["client"]
+    admin, user = token("admin@example.com"), token("biasa@example.com")
+    assert c.post("/analyze", headers=admin, json={"youtube_url": URL}).status_code == 200
+    folder = _preview_clip(env, "admin@example.com")
+    _preview_clip(env, "admin@example.com", "00:06", "00:09")
+    # Hanya klip final yang bisa dikirim: klip pertama dirender final, klip kedua masih pratinjau
+    make_video(folder / "final.mp4", 1)
+    A._record_clip(str(folder), {"start_time": "00:01", "end_time": "00:05", "short_title": "Cerita bisnis"},
+                   str(folder / "final.mp4"), {"resolution": "1080", "range": [1.0, 5.0]})
+    items = [{"video_id": VIDEO_ID, "key": "00:01-00:05"}, {"video_id": VIDEO_ID, "key": "00:06-00:09"}]
+
+    assert c.post("/reviews", headers=user, json={"client_name": "A", "items": items}).status_code == 403
+    assert c.post("/reviews", headers=admin, json={"client_name": " ", "items": items}).status_code == 400
+    assert c.post("/reviews", headers=admin, json={"client_name": "A", "items": items[1:]}).json["code"] == "no_final_clips"
+    res = c.post("/reviews", headers=admin, json={"client_name": "Podcast Budi", "note": "Batch episode 12", "items": items})
+    assert res.status_code == 201, res.json
+    review = res.json["review"]
+    assert review["summary"]["total"] == 1 and review["client_name"] == "Podcast Budi"
+    tok = review["token"]
+
+    # Klien membuka link tanpa login
+    assert c.get("/review/token-palsu").status_code == 404
+    page = c.get(f"/review/{tok}").json
+    assert page["review"]["note"] == "Batch episode 12" and len(page["clips"]) == 1
+    clip = page["clips"][0]
+    assert clip["title"] == "Cerita bisnis" and clip["decision"]["status"] == "pending" and clip["upload"]["titles"]
+    assert c.get("/" + clip["url"].split("://", 1)[1].split("/", 1)[1]).status_code == 200    # video bisa diputar
+    c.get(f"/review/{tok}")                                                                     # kunjungan ulang < 30 mnt
+    assert c.get("/reviews", headers=admin).json["reviews"][0]["summary"]["opened"] == 1
+
+    # Keputusan & revisi
+    key = {"video_id": VIDEO_ID, "key": "00:01-00:05"}
+    assert c.post(f"/review/{tok}/decision", json={**key, "status": "hapus"}).status_code == 400
+    assert c.post(f"/review/{tok}/decision", json={"video_id": VIDEO_ID, "key": "00:06-00:09", "status": "approved"}).status_code == 400
+    res = c.post(f"/review/{tok}/decision", json={**key, "status": "revision", "reason": "kutipan", "note": "Nama tamu salah"})
+    assert res.json["decision"]["reason"] == "kutipan" and res.json["summary"]["revision"] == 1
+    listed = c.get(f"/reviews?video_id={VIDEO_ID}", headers=admin).json["reviews"][0]
+    assert listed["revisions"][0]["note"] == "Nama tamu salah"
+    assert c.post(f"/review/{tok}/decision", json={**key, "status": "approved"}).json["summary"]["approved"] == 1
+
+    # Link unggahan: hanya platform yang dikenal, https
+    assert c.post(f"/review/{tok}/publish", json={**key, "url": "http://youtube.com/shorts/x"}).status_code == 400
+    assert c.post(f"/review/{tok}/publish", json={**key, "url": "https://evil.example/shorts/x"}).status_code == 400
+    res = c.post(f"/review/{tok}/publish", json={**key, "url": "https://www.youtube.com/shorts/abcdEFGhijk"})
+    assert res.json["publish"][0]["platform"] == "youtube" and res.json["summary"]["published"] == 1
+
+    events = [e["event"] for e in T.read(f"u_{uuid.uuid5(uuid.NAMESPACE_DNS, 'admin@example.com')}")]
+    assert events == ["batch_delivered", "review_link_opened", "revision_requested", "clip_approved", "clip_published"]
+
+    # Kedaluwarsa / dihapus → link mati
+    assert c.get(f"/reviews?video_id=lainlainlain", headers=admin).json["reviews"] == []
+    assert c.delete(f"/reviews/{review['id']}", headers=admin).status_code == 200
+    assert c.get(f"/review/{tok}").json["code"] == "review_gone"
+
+
+def test_performance_report_flow(env, monkeypatch):
+    import performance as P
+    import telemetry as T
+    monkeypatch.setattr(T, "TELEMETRY_DIR", str(env["tmp"] / "telemetry"))
+    monkeypatch.setattr(P, "fetch", lambda url, platform: {"views": 1234, "likes": 50, "channel_id": "UC1",
+                                                          "channel": "Budi", "subscribers": 900, "title": "Klip"})
+    c = env["client"]
+    admin, user = token("admin@example.com"), token("biasa@example.com")
+    assert c.post("/analyze", headers=admin, json={"youtube_url": URL}).status_code == 200
+    folder = _preview_clip(env, "admin@example.com")
+    make_video(folder / "final.mp4", 1)
+    A._record_clip(str(folder), {"start_time": "00:01", "end_time": "00:05", "short_title": "Cerita bisnis", "viral_score": 88},
+                   str(folder / "final.mp4"), {"resolution": "1080", "range": [1.0, 5.0]})
+    review = c.post("/reviews", headers=admin, json={"client_name": "Podcast Budi",
+                                                    "items": [{"video_id": VIDEO_ID, "key": "00:01-00:05"}]}).json["review"]
+    key = {"video_id": VIDEO_ID, "key": "00:01-00:05"}
+    c.post(f"/review/{review['token']}/publish", json={**key, "url": "https://www.youtube.com/shorts/abcdEFGhijk"})
+
+    assert c.get("/performance/clients", headers=user).status_code == 403
+    assert c.post("/performance/refresh", headers=admin, json={}).json == {"updated": 1, "failed": 0, "skipped": 0}
+    clients = c.get("/performance/clients", headers=admin).json["clients"]
+    assert len(clients) == 1 and clients[0]["client_name"] == "Podcast Budi"
+    assert clients[0]["totals"]["views"] == 1234 and clients[0]["totals"]["delivered"] == 1
+    client_key = clients[0]["key"]
+
+    report = c.get(f"/performance/report?client={client_key}", headers=admin).json
+    assert report["report"]["top_clips"][0]["viral_score"] == 88          # operator melihat skor untuk kalibrasi
+    assert report["report"]["subscribers"][0]["end"] == 900
+    assert c.get("/performance/report?client=n_tidak-ada", headers=admin).status_code == 404
+
+    # Laporan publik untuk klien: tanpa login, tanpa skor internal
+    assert c.get("/report/palsu").status_code == 404
+    public = c.get(f"/report/{report['token']}").json["report"]
+    assert public["client_name"] == "Podcast Budi" and public["totals"]["views"] == 1234
+    assert "viral_score" not in public["top_clips"][0] and public["top_clips"][0]["title"] == "Cerita bisnis"
+    assert c.get(f"/report/{report['token']}?period=2026-13").json["report"]["period"] == public["period"]   # periode tidak valid → bulan ini
+    events = [e["event"] for e in T.read(f"u_{uuid.uuid5(uuid.NAMESPACE_DNS, 'admin@example.com')}")]
+    assert "clip_performance_snapshot" in events and events.count("report_viewed") == 1

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Download, ImageIcon, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { createThumbnail, downloadUrl } from '@/lib/api'
@@ -16,17 +16,32 @@ interface Props {
   hook: HookSettings
   /** Detik video sumber yang sedang diputar; null = belum diputar */
   playhead: number | null
+  /** Belum ada thumbnail → buat otomatis sekali saat editor dibuka (frame wajah terbaik + teks saran) */
+  autoCreate?: boolean
 }
 
 /**
  * Thumbnail (cover Shorts/TikTok/Reels, 1080×1920): frame dengan wajah paling jelas atau frame yang
  * sedang diputar, bayangan bawah, dan teks besar 1–3 kata.
  */
-export default function ThumbnailPanel({ videoId, clipKey, initial, suggestion, hook, playhead }: Props) {
+export default function ThumbnailPanel({ videoId, clipKey, initial, suggestion, hook, playhead, autoCreate }: Props) {
   const [thumb, setThumb] = useState(initial)
   const [text, setText] = useState(initial?.text || suggestion || hook.text)
   const [frame, setFrame] = useState<'auto' | 'current'>('auto')
-  const [busy, setBusy] = useState(false)
+  const startAuto = !!autoCreate && !initial && !!(suggestion || hook.text)
+  const [busy, setBusy] = useState(startAuto)
+
+  // Thumbnail otomatis sesuai konteks klip: frame wajah paling jelas + teks thumbnail dari analisis
+  const autoRef = useRef(startAuto)
+  useEffect(() => {
+    if (!autoRef.current) return
+    autoRef.current = false
+    const { style, accent, font } = hook
+    createThumbnail(videoId, clipKey, suggestion || hook.text, null, { style, accent, font })
+      .then(setThumb)
+      .catch(() => { /* gagal: pengguna tetap bisa membuatnya manual */ })
+      .finally(() => setBusy(false))
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const words = text.replaceAll('*', ' ').split(/\s+/).filter(Boolean).length
   const atCurrent = frame === 'current' && playhead !== null
 

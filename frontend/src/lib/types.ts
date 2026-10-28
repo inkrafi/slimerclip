@@ -52,6 +52,37 @@ export interface VideoMetadata {
   heatmap?: HeatmapPoint[]
 }
 
+/** Profil analisis (admin): bahasa, tipe video, target jumlah & durasi klip */
+export interface ClipProfile {
+  /** kode ISO bahasa ucapan, atau 'auto' */
+  source_language: string
+  /** bahasa judul/hook/deskripsi: kode ISO, atau 'same' = ikut bahasa video */
+  output_language: string
+  /** bahasa subtitle: 'same' = bahasa ucapan, kode bahasa = diterjemahkan */
+  subtitle_language: string
+  video_type: string
+  clip_count: 'auto' | number
+  duration: string
+}
+
+/** Preset klien (admin): profil analisis + format edit yang biasa dipakai untuk klien itu */
+export interface ClientPreset {
+  id: string
+  name: string
+  profile: ClipProfile
+  /** Format edit untuk "render semua"; '' = tidak ditentukan */
+  template_id: string
+  updated_at: number
+}
+
+export interface ClipProfileOptions {
+  languages: { id: string; label: string }[]
+  video_types: { id: string; label: string }[]
+  durations: { id: string; label: string }[]
+  clip_counts: ('auto' | number)[]
+  default: ClipProfile
+}
+
 export interface AnalysisResult {
   segments: Segment[]
   overall_video_summary: string
@@ -61,6 +92,10 @@ export interface AnalysisResult {
   video_metadata?: VideoMetadata
   scoring_version?: number
   from_cache?: boolean
+  /** Profil yang dipakai saat analisis + hasil deteksi (tipe video & bahasa ucapan) */
+  profile?: ClipProfile
+  video_type?: string
+  language?: string | null
 }
 
 export interface ClipGenerateOptions {
@@ -100,11 +135,129 @@ export interface UploadKit {
   description_full: string
 }
 
+/** Laporan performa bulanan per klien */
+export interface ReportClip {
+  title: string
+  url: string
+  platform: 'youtube' | 'tiktok' | 'instagram'
+  thumbnail_url?: string | null
+  /** Views terakhir yang tercatat (total sejak diunggah) */
+  views: number
+  /** Views yang bertambah selama periode laporan */
+  views_in_period: number
+  likes?: number | null
+  published?: string
+  new_in_period: boolean
+  /** Hanya di laporan operator: skor analisis, untuk membandingkan dengan views sungguhan */
+  viral_score?: number | null
+}
+
+export interface PerformanceReport {
+  client_name: string
+  period: string
+  is_current: boolean
+  updated_at: number | null
+  totals: {
+    delivered: number
+    approved: number
+    revision: number
+    published: number
+    tracked: number
+    unreadable: number
+    views: number
+    avg_views_new: number | null
+  }
+  previous: { period: string; views: number; published: number }
+  views_change_pct: number | null
+  platforms: Record<string, { clips: number; views: number }>
+  subscribers: { name: string; start: number; end: number; change: number }[]
+  top_clips: ReportClip[]
+  periods: string[]
+}
+
+export interface PerformanceClient {
+  key: string
+  client_name: string
+  reviews: number
+  links: number
+  totals: PerformanceReport['totals']
+  views_change_pct: number | null
+  updated_at: number | null
+  top_clip: ReportClip | null
+  token: string
+}
+
+/** Link review per klien (tanpa login) */
+export type ReviewStatus = 'pending' | 'approved' | 'revision'
+export type RevisionReason = 'momen' | 'kutipan' | 'gaya' | 'musik' | 'lainnya'
+
+export interface ReviewDecision {
+  status: ReviewStatus
+  at?: number
+  reason?: RevisionReason
+  note?: string
+}
+
+export interface ReviewPublishLink {
+  url: string
+  platform: 'youtube' | 'tiktok' | 'instagram'
+  at: number
+}
+
+export interface ReviewSummary {
+  total: number
+  approved: number
+  revision: number
+  pending: number
+  published: number
+  opened: number
+  last_opened: number | null
+}
+
+/** Klip di halaman review klien */
+export interface ReviewClip {
+  video_id: string
+  key: string
+  decision: ReviewDecision
+  publish: ReviewPublishLink[]
+  /** Klip sudah dihapus / belum final */
+  unavailable?: boolean
+  title?: string
+  url?: string
+  thumbnail_url?: string | null
+  srt_url?: string | null
+  upload?: UploadKit
+  duration?: number | null
+}
+
+export interface PublicReview {
+  review: { client_name: string; title: string; note: string; created_at: number; expires_at: number }
+  clips: ReviewClip[]
+  summary: ReviewSummary
+  reasons: RevisionReason[]
+}
+
+/** Link review di sisi operator */
+export interface ReviewLink {
+  id: string
+  client_name: string
+  title: string
+  note: string
+  created_at: number
+  expires_at: number
+  items: { video_id: string; key: string }[]
+  summary: ReviewSummary
+  revisions: { video_id: string; key: string; reason?: RevisionReason; note: string; at?: number }[]
+  token: string
+}
+
 export interface RenderedClip {
   key: string
   /** Judul klip (nama file unduhan): diedit pengguna atau saran dari analisis */
   title?: string
   thumbnail_url?: string | null
+  /** Subtitle SRT klip final (teks hasil edit) */
+  srt_url?: string | null
   /** Judul, deskripsi & hashtag siap salin ke YouTube Studio (tidak ada untuk klip lama) */
   upload?: UploadKit
   /** null untuk klip lama yang dibuat sebelum ada pencatatan (rentang waktunya tidak diketahui) */
@@ -354,6 +507,10 @@ export interface EditRecipe {
   music: { asset: string; volume: number; ducking: boolean }
   sfx: { asset: string; at: number; volume: number }[]
   hook: HookSettings
+  /** Suara asli: volume (100 = normal) & penjernih suara */
+  voice: { volume: number; clean: boolean }
+  /** Filter video lebih jernih & tajam */
+  enhance: { video: boolean }
 }
 
 export type HookStyle = 'spotlight' | 'tape' | 'poster' | 'light' | 'dark' | 'outline'
@@ -388,6 +545,9 @@ export interface EditorAsset {
   kind: 'image' | 'audio'
   size_mb: number
   url: string
+  /** Musik: suasana (santai/semangat/tegang/lucu/dramatis/umum) dari tanda di editor ("tag") atau tebakan nama file ("name") */
+  mood?: string | null
+  mood_source?: 'tag' | 'name' | null
 }
 
 export type RenderOptions = Pick<ClipGenerateOptions, 'resolution' | 'caption_enabled' | 'smart_tracking' | 'split_screen' | 'caption_style'>
@@ -411,9 +571,17 @@ export interface EditorData {
   thumbnail: ClipThumbnail | null
   /** Teks thumbnail saran dari analisis (atau ide hook pertama) */
   thumbnail_suggestion: string
-  sfx_library: { name: string; label: string; url: string }[]
+  /** Efek suara bawaan per kategori (Transisi, Penekanan, Lucu, Notifikasi, Suasana) */
+  sfx_library: { name: string; label: string; group: string; url: string }[]
+  /** Musik latar bawaan per suasana (bebas hak cipta) */
+  music_library: { name: string; label: string; mood: string; url: string }[]
   assets: EditorAsset[]
   templates: EditTemplate[]
+  /** Resep edit otomatis untuk klip ini & ringkasannya */
+  auto_edit: EditRecipe
+  auto_summary: { mood: string; music: string; music_is_user: boolean; sfx: number; hook: string }
+  /** true = klip belum pernah diedit, jadi editor dibuka dengan edit otomatis */
+  auto_applied: boolean
 }
 
 /** Thumbnail klip (JPG 1080×1920). at = detik video sumber frame-nya. */

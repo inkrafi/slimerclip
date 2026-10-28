@@ -1,5 +1,7 @@
 'use client'
 
+import { useCopy } from '@/components/LocaleProvider'
+
 import { useScrollProgress } from '@/hooks/useScrollProgress'
 import StudioImage from './StudioImage'
 
@@ -8,22 +10,38 @@ const windowed = (from: number, to: number) => ({
   opacity: `calc(clamp(0, (var(--p, 0) - ${from}) * 8, 1) * clamp(0, (${to} - var(--p, 0)) * 8, 1))`,
 })
 
-const STAGES = [
-  { from: -1, to: 0.36, title: 'Kamera lebar, dua orang ngobrol.', body: 'Crop tengah biasa akan memotong keduanya, atau malah menampilkan meja di antara mereka.' },
-  { from: 0.34, to: 0.64, title: 'Wajah dicari, gerak mulut dibaca.', body: 'Sepuluh kali per detik SlimerClip melacak tiap orang dan mengukur siapa yang sedang bicara.' },
-  { from: 0.62, to: 2, title: 'Bergantian bicara? Layar dibagi.', body: 'Orang kiri di atas, orang kanan di bawah. Saat satu orang bicara panjang, kamera zoom ke dia.' },
-]
+const STAGE_WINDOWS = [{ from: -1, to: 0.36 }, { from: 0.34, to: 0.64 }, { from: 0.62, to: 2 }]
+const COPY = {
+  id: {
+    heading: 'Tata letak yang mengikuti pembicara',
+    stages: [
+      { title: 'Kamera lebar, dua orang ngobrol.', body: 'Crop tengah biasa akan memotong keduanya, atau malah menampilkan meja di antara mereka.' },
+      { title: 'Wajah dicari, gerak mulut dibaca.', body: 'Sepuluh kali per detik SlimerClip melacak tiap orang dan mengukur siapa yang sedang bicara.' },
+      { title: 'Bergantian bicara? Layar dibagi.', body: 'Orang kiri di atas, orang kanan di bawah. Saat satu orang bicara panjang, kamera zoom ke dia.' },
+    ],
+  },
+  en: {
+    heading: 'A layout that follows the speaker',
+    stages: [
+      { title: 'Wide shot, two people talking.', body: 'A plain center crop cuts both of them off, or shows the table between them.' },
+      { title: 'Faces found, lips read.', body: 'Ten times per second SlimerClip tracks each person and measures who is speaking.' },
+      { title: 'Taking turns? Split the screen.', body: 'Left person on top, right person below. When one person talks for a while, the camera zooms in on them.' },
+    ],
+  },
+}
 
 export default function SplitStory({ videoId }: { videoId?: string }) {
   // Reduced motion: langsung tampilkan keadaan akhir (layar terbagi)
   const ref = useScrollProgress<HTMLElement>('sticky', 1)
   const illustrated = !videoId
+  const t = useCopy(COPY)
+  const STAGES = t.stages.map((s, i) => ({ ...s, ...STAGE_WINDOWS[i] }))
 
   return (
     <section ref={ref} aria-labelledby="split-title" className="relative h-[260vh] border-t border-rule">
       <div className="sticky top-14 h-[calc(100vh-3.5rem)] grid gap-8 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] items-center py-10">
         <div className="relative">
-          <h2 id="split-title" className="sr-only">Tata letak yang mengikuti pembicara</h2>
+          <h2 id="split-title" className="sr-only">{t.heading}</h2>
           <div className="relative min-h-[15rem]">
             {STAGES.map((s, i) => (
               <div key={i} className="absolute inset-0" style={windowed(s.from, s.to)}>

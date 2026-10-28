@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { AlertCircle, Download, Loader2, RotateCcw, Wand2 } from 'lucide-react'
+import { AlertCircle, Download, Loader2, RotateCcw, Sparkles, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import CaptionStyleEditor, { Range, Row, Toggle } from '@/components/CaptionStyleEditor'
 import AssetPicker from '@/components/editor/AssetPicker'
 import ClipTitleField from '@/components/editor/ClipTitleField'
 import { HookShade, MarksPreview, VignettePreview } from '@/components/editor/EffectPreview'
 import { HookOverlay, LiveCaption } from '@/components/editor/LiveOverlays'
+import MusicPanel from '@/components/editor/MusicPanel'
 import SfxPanel from '@/components/editor/SfxPanel'
 import ThumbnailPanel from '@/components/editor/ThumbnailPanel'
 import TemplatePanel from '@/components/editor/TemplatePanel'
@@ -35,6 +36,14 @@ const VIGNETTE_SHAPES: { id: VignetteShape; label: string }[] = [
   { id: 'bottom', label: 'Bawah' }, { id: 'top', label: 'Atas' }, { id: 'both', label: 'Atas & bawah' }, { id: 'radial', label: 'Lingkaran' },
 ]
 const HOOK_DURATIONS = [3, 4, 5, 0]
+type Tab = 'teks' | 'audio' | 'visual' | 'thumbnail' | 'ekspor'
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'teks', label: 'Teks & hook' },
+  { id: 'audio', label: 'Audio' },
+  { id: 'visual', label: 'Visual' },
+  { id: 'thumbnail', label: 'Thumbnail' },
+  { id: 'ekspor', label: 'Potong & ekspor' },
+]
 const RESOLUTIONS: { id: RenderOptions['resolution']; label: string; hint: string }[] = [
   { id: '720', label: '720p', hint: '720×1280. File kecil, untuk pratinjau atau kuota data terbatas.' },
   { id: '1080', label: '1080p', hint: '1080×1920. Standar TikTok, Reels & Shorts.' },
@@ -66,12 +75,15 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
   const [playhead, setPlayhead] = useState<number | null>(null)
   const [hookFocus, setHookFocus] = useState(false)
   const [appliedTemplate, setAppliedTemplate] = useState<string | null>(null)
+  const [tab, setTab] = useState<Tab>('teks')
+  const [autoApplied, setAutoApplied] = useState(false)
   const video = useRef<HTMLVideoElement>(null)
 
   const load = useCallback(() => {
     return getEditor(videoId, clipKey).then(d => {
       setData(d)
       setEdit(d.edit)
+      setAutoApplied(d.auto_applied)
       setOptions(d.options)
       setTranscript(d.transcript?.segments ?? null)
       setTranscriptDirty(false)
@@ -220,6 +232,29 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
     }
   }
 
+  // Edit otomatis: hook, musik sesuai suasana, efek suara, suara jernih, HD. Rentang & watermark klip tetap.
+  const applyAuto = () => {
+    const auto = data.auto_edit
+    const shift = edit.start - auto.start
+    setEdit({
+      ...edit,
+      hook: auto.hook,
+      music: auto.music,
+      vignette: auto.vignette,
+      voice: auto.voice,
+      enhance: auto.enhance,
+      sfx: auto.sfx.map(x => ({ ...x, at: Math.round((x.at + shift) * 100) / 100 })).filter(x => x.at < edit.end),
+    })
+    setAutoApplied(true)
+    toast.success('Edit otomatis diterapkan. Sesuaikan lalu render.')
+  }
+
+  const clearEffects = () => {
+    setEdit({ ...edit, hook: { ...edit.hook, enabled: false }, music: { ...edit.music, asset: '' }, sfx: [],
+      voice: { volume: 100, clean: false }, enhance: { video: false } })
+    setAutoApplied(false)
+  }
+
   const reset = () => {
     setEdit(data.edit)
     setOptions(data.options)
@@ -241,7 +276,6 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
   const canDownload = !!finalUrl && !dirty && !rendering
   const outOfQuota = data.final_left === 0
   const logo = data.assets.find(a => a.name === edit.marks.logo.asset)
-  const music = data.assets.find(a => a.name === edit.music.asset)
   const ytThumb = /^[\w-]{11}$/.test(videoId) ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : undefined
 
   return (
@@ -266,6 +300,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
               preload="metadata"
               onTimeUpdate={e => setPlayhead(rendered[0] + e.currentTarget.currentTime)}
               className="absolute inset-0 size-full"
+              style={edit.enhance.video && clean ? { filter: 'contrast(1.05) saturate(1.1)' } : undefined}
             />
             {vignetteChanged && <VignettePreview vignette={edit.vignette} />}
             {marksChanged && <MarksPreview marks={edit.marks} logoUrl={logo?.url} />}
@@ -290,35 +325,25 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
         </div>
 
         {/* Pengaturan */}
-        <fieldset disabled={rendering} className="min-w-0 divide-y divide-rule border-y border-rule">
-          <Section title="Format edit" hint="Pakai gaya yang pernah kamu simpan: caption, hook, watermark, vignette, musik & resolusi. Teks hook dan efek suara tetap milik klip ini.">
-            <TemplatePanel templates={data.templates ?? []} appliedId={appliedTemplate}
-              onApply={applyTemplate} onSave={storeTemplate} onDelete={removeTemplate} />
-          </Section>
-          <Section title="Potong" hint="Geser pegangan untuk memajukan awal atau memperpanjang akhir klip, hingga 30 detik di luar momen.">
-            <TrimBar
-              start={edit.start}
-              end={edit.end}
-              min={bounds[0]}
-              max={bounds[1]}
-              rendered={rendered}
-              moment={data.moment}
-              markers={edit.sfx.map(s => s.at)}
-              playhead={playhead}
-              onChange={(start, end) => setEdit({ ...edit, start: Math.round(start * 10) / 10, end: Math.round(end * 10) / 10 })}
-            />
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" className="btn btn-sm btn-quiet" disabled={playhead === null}
-                onClick={() => playhead !== null && playhead < edit.end - 3 && setEdit({ ...edit, start: Math.round(playhead * 10) / 10 })}>
-                Mulai dari posisi video
+        <div className="min-w-0">
+          <AutoEditBanner
+            applied={autoApplied}
+            summary={data.auto_summary}
+            disabled={rendering}
+            onApply={applyAuto}
+            onClear={clearEffects}
+          />
+          <div role="tablist" aria-label="Bagian editor" className="sticky top-0 z-10 -mx-1 mt-4 flex gap-1 overflow-x-auto bg-bay/90 px-1 py-2 backdrop-blur-md">
+            {TABS.map(t => (
+              <button key={t.id} type="button" role="tab" id={`tab-${t.id}`} aria-selected={tab === t.id} aria-controls={`panel-${t.id}`}
+                onClick={() => setTab(t.id)}
+                className={`h-9 shrink-0 rounded-md px-3.5 text-sm ${tab === t.id ? 'bg-raised text-ink shadow-sm' : 'text-ink-muted hover:text-ink'}`}>
+                {t.label}
               </button>
-              <button type="button" className="btn btn-sm btn-quiet" disabled={playhead === null}
-                onClick={() => playhead !== null && playhead > edit.start + 3 && setEdit({ ...edit, end: Math.round(playhead * 10) / 10 })}>
-                Akhiri di posisi video
-              </button>
-            </div>
-          </Section>
-
+            ))}
+          </div>
+          <fieldset disabled={rendering} className="min-w-0 border-b border-rule">
+            <div role="tabpanel" id="panel-teks" aria-labelledby="tab-teks" hidden={tab !== 'teks'} className="divide-y divide-rule">
           <Section title="Hook" hint="Kalimat pembuka besar di awal video agar penonton berhenti scroll.">
             <Toggle label="Tampilkan hook" checked={edit.hook.enabled}
               onChange={v => setHook({ enabled: v, ...(v && !edit.hook.text && data.hook_suggestions[0] ? { text: data.hook_suggestions[0] } : {}) })} />
@@ -429,10 +454,6 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
             )}
           </Section>
 
-          <Section title="Thumbnail" hint="Gambar cover 9:16 untuk Shorts, TikTok & Reels: wajah yang jelas dan teks besar.">
-            <ThumbnailPanel videoId={videoId} clipKey={clipKey} initial={data.thumbnail} suggestion={data.thumbnail_suggestion}
-              hook={edit.hook} playhead={playhead} />
-          </Section>
           <Section title="Caption">
             <Toggle label="Caption otomatis" checked={options.caption_enabled} onChange={v => setOptions({ ...options, caption_enabled: v })} />
             {options.caption_enabled && (
@@ -471,6 +492,49 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
                 </div>
               </div>
             )}
+          </Section>
+
+            </div>
+            <div role="tabpanel" id="panel-audio" aria-labelledby="tab-audio" hidden={tab !== 'audio'} className="divide-y divide-rule">
+          <Section title="Suara" hint="Suara pembicara sudah diratakan otomatis (yang pelan dikeraskan, yang keras dipelankan).">
+            <div className="space-y-4 text-sm">
+              <Range label="Volume suara" value={edit.voice.volume} min={0} max={200} step={5}
+                onChange={v => setEdit({ ...edit, voice: { ...edit.voice, volume: v } })} format={v => (v === 100 ? 'normal' : `${v}%`)} />
+              <Toggle label="Suara lebih jernih (kurangi dengung & desis, perjelas vokal)" checked={edit.voice.clean}
+                onChange={v => setEdit({ ...edit, voice: { ...edit.voice, clean: v } })} />
+            </div>
+          </Section>
+
+          <Section title="Musik latar" hint="Otomatis dipelankan saat ada yang bicara, jadi suara tetap jelas.">
+            <MusicPanel music={edit.music} library={data.music_library} assets={data.assets}
+              onChange={setMusic} onAssetsChange={setAssets} />
+            {edit.music.asset && (
+              <div className="mt-4 space-y-4 text-sm">
+                <Range label="Volume musik" value={edit.music.volume} min={0} max={100} step={1}
+                  onChange={v => setMusic({ volume: v })} format={v => `${v}%`} />
+                <Toggle label="Pelankan musik saat ada yang bicara" checked={edit.music.ducking} onChange={v => setMusic({ ducking: v })} />
+              </div>
+            )}
+          </Section>
+
+          <Section title="Efek suara" hint="Tambahkan bunyi di momen tertentu, misalnya pop saat punchline atau whoosh saat ganti topik.">
+            <SfxPanel
+              sfx={edit.sfx}
+              library={data.sfx_library}
+              assets={data.assets}
+              range={[edit.start, edit.end]}
+              playhead={playhead}
+              onChange={sfx => setEdit({ ...edit, sfx })}
+              onAssetsChange={setAssets}
+              onSeek={seek}
+            />
+          </Section>
+
+            </div>
+            <div role="tabpanel" id="panel-visual" aria-labelledby="tab-visual" hidden={tab !== 'visual'} className="divide-y divide-rule">
+          <Section title="Kualitas video" hint="Kurangi noise, warna & kontras sedikit naik, dan penajaman. Paling terasa untuk video sumber yang buram.">
+            <Toggle label="Video lebih jernih & tajam (HD)" checked={edit.enhance.video}
+              onChange={v => setEdit({ ...edit, enhance: { video: v } })} />
           </Section>
 
           <Section title="Vignette" hint="Bayangan gelap di tepi video agar caption dan wajah lebih menonjol.">
@@ -546,37 +610,42 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
             </div>
           </Section>
 
-          <Section title="Musik latar">
-            <div className="space-y-4 text-sm">
-              <AssetPicker kind="audio" assets={data.assets} value={edit.music.asset}
-                onChange={asset => setMusic({ asset })} onAssetsChange={setAssets} />
-              {music && (
-                <>
-                  <audio src={music.url} controls preload="none" className="w-full h-9" aria-label={`Dengarkan ${music.label}`} />
-                  <Range label="Volume musik" value={edit.music.volume} min={0} max={100} step={5}
-                    onChange={v => setMusic({ volume: v })} format={v => `${v}%`} />
-                  <Toggle label="Pelankan musik saat ada yang bicara" checked={edit.music.ducking} onChange={v => setMusic({ ducking: v })} />
-                  <button type="button" className="text-xs text-ink-muted underline underline-offset-4 decoration-rule hover:text-ink" onClick={() => setMusic({ asset: '' })}>
-                    Tanpa musik
-                  </button>
-                </>
-              )}
+            </div>
+            <div role="tabpanel" id="panel-thumbnail" aria-labelledby="tab-thumbnail" hidden={tab !== 'thumbnail'} className="divide-y divide-rule">
+          <Section title="Thumbnail" hint="Gambar cover 9:16 untuk Shorts, TikTok & Reels: wajah yang jelas dan teks besar.">
+            <ThumbnailPanel videoId={videoId} clipKey={clipKey} initial={data.thumbnail} suggestion={data.thumbnail_suggestion}
+              hook={edit.hook} playhead={playhead} autoCreate={data.source_ready && data.clean_preview} />
+          </Section>
+            </div>
+            <div role="tabpanel" id="panel-ekspor" aria-labelledby="tab-ekspor" hidden={tab !== 'ekspor'} className="divide-y divide-rule">
+          <Section title="Potong" hint="Geser pegangan untuk memajukan awal atau memperpanjang akhir klip, hingga 30 detik di luar momen.">
+            <TrimBar
+              start={edit.start}
+              end={edit.end}
+              min={bounds[0]}
+              max={bounds[1]}
+              rendered={rendered}
+              moment={data.moment}
+              markers={edit.sfx.map(s => s.at)}
+              playhead={playhead}
+              onChange={(start, end) => setEdit({ ...edit, start: Math.round(start * 10) / 10, end: Math.round(end * 10) / 10 })}
+            />
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button type="button" className="btn btn-sm btn-quiet" disabled={playhead === null}
+                onClick={() => playhead !== null && playhead < edit.end - 3 && setEdit({ ...edit, start: Math.round(playhead * 10) / 10 })}>
+                Mulai dari posisi video
+              </button>
+              <button type="button" className="btn btn-sm btn-quiet" disabled={playhead === null}
+                onClick={() => playhead !== null && playhead > edit.start + 3 && setEdit({ ...edit, end: Math.round(playhead * 10) / 10 })}>
+                Akhiri di posisi video
+              </button>
             </div>
           </Section>
 
-          <Section title="Efek suara" hint="Tambahkan bunyi di momen tertentu, misalnya pop saat punchline atau whoosh saat ganti topik.">
-            <SfxPanel
-              sfx={edit.sfx}
-              library={data.sfx_library}
-              assets={data.assets}
-              range={[edit.start, edit.end]}
-              playhead={playhead}
-              onChange={sfx => setEdit({ ...edit, sfx })}
-              onAssetsChange={setAssets}
-              onSeek={seek}
-            />
+          <Section title="Format edit" hint="Pakai gaya yang pernah kamu simpan: caption, hook, watermark, vignette, musik & resolusi. Teks hook dan efek suara tetap milik klip ini.">
+            <TemplatePanel templates={data.templates ?? []} appliedId={appliedTemplate}
+              onApply={applyTemplate} onSave={storeTemplate} onDelete={removeTemplate} />
           </Section>
-
           <Section title="Render">
             <div className="space-y-3 text-sm">
               <Row label="Resolusi">
@@ -598,7 +667,9 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
               )}
             </div>
           </Section>
-        </fieldset>
+            </div>
+          </fieldset>
+        </div>
       </div>
 
       {/* Bilah aksi */}
@@ -645,6 +716,44 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
         </div>
       </div>
     </div>
+  )
+}
+
+const MOOD_LABEL: Record<string, string> = {
+  santai: 'santai', semangat: 'semangat', tegang: 'tegang', lucu: 'lucu', dramatis: 'dramatis',
+}
+
+/** Ringkasan edit otomatis + tombol terapkan ulang / kosongkan efek. */
+function AutoEditBanner({ applied, summary, disabled, onApply, onClear }: {
+  applied: boolean
+  summary: EditorData['auto_summary']
+  disabled: boolean
+  onApply: () => void
+  onClear: () => void
+}) {
+  const parts = [
+    summary.hook && `hook “${summary.hook.replaceAll('*', '')}”`,
+    `musik ${summary.music}`,
+    `${summary.sfx} efek suara`,
+    'suara jernih',
+    'video HD',
+  ].filter(Boolean)
+  return (
+    <section aria-label="Edit otomatis" className={`rounded-lg border px-4 py-3 text-sm ${applied ? 'border-signal/50 bg-signal/5' : 'border-rule bg-bay/40'}`}>
+      <p className="flex items-center gap-2 font-semibold text-ink">
+        <Sparkles className="size-4 text-signal" aria-hidden /> {applied ? 'Sudah diedit otomatis' : 'Edit otomatis'}
+      </p>
+      <p className="mt-1 text-ink-muted">
+        {applied ? 'Diterapkan: ' : `Suasana ${MOOD_LABEL[summary.mood] ?? summary.mood}: `}{parts.join(', ')}.
+        {applied ? ' Sesuaikan apa pun di tab di bawah, lalu render.' : ''}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button type="button" onClick={onApply} disabled={disabled} className={`btn btn-sm ${applied ? 'btn-quiet' : 'btn-primary'}`}>
+          <Wand2 className="size-3.5" aria-hidden /> {applied ? 'Edit otomatis ulang' : 'Terapkan edit otomatis'}
+        </button>
+        {applied && <button type="button" onClick={onClear} disabled={disabled} className="btn btn-sm btn-quiet">Hapus semua efek</button>}
+      </div>
+    </section>
   )
 }
 

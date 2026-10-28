@@ -1,155 +1,242 @@
-MIN_SEGMENTS = 8
-MIN_CLIP_SECONDS = 45
+"""
+Prompt pemilihan momen klip. Disusun dari profil analisis (clip_profile.py): kriteria umum yang ketat,
+panduan per tipe video, batas durasi & jumlah, dan bahasa teks untuk penonton.
+"""
+import clip_profile
+
+MIN_SEGMENTS = clip_profile.MIN_CLIPS
 
 
-def target_segment_count(video_duration: float) -> int:
+def target_segment_count(video_duration: float, profile: dict | None = None) -> int:
+    """Jumlah momen MAKSIMAL yang diminta (lihat clip_profile.clip_count)."""
+    return clip_profile.clip_count(profile, video_duration)
+
+
+def min_segment_count(count: int, exact: bool = False) -> int:
     """
-    Jumlah momen MAKSIMAL yang diminta: sekitar satu per menit video, 8 sampai 12; Gemini diminta minimal
-    MIN_SEGMENTS. Video pendek dibatasi agar tiap momen tetap bisa 45 detik tanpa tumpang tindih.
-    Batas 12 mengikuti skema JSON: model Gemini (mis. flash-lite) menolak minItems yang lebih besar.
+    Minimal momen di skema JSON. Otomatis: kecil (lebih baik sedikit momen bagus). Jumlah pilihan admin: 5;
+    jumlah persisnya diminta lewat prompt (gemini-flash-lite menolak skema ini dengan minItems ≥12, terukur).
     """
-    if not video_duration:
-        return 10
-    fits = max(1, int(video_duration // MIN_CLIP_SECONDS))
-    return int(min(fits, max(MIN_SEGMENTS, min(12, round(video_duration / 60)))))
+    return min(EXACT_MIN_ITEMS if exact else MIN_SEGMENTS, count)
 
 
-def min_segment_count(count: int) -> int:
-    return min(MIN_SEGMENTS, count)
+EXACT_MIN_ITEMS = 5
 
 
-def get_clip_analysis_prompt(count: int = 10) -> str:
-    return _PROMPT.replace("{COUNT}", str(count)).replace("{MIN}", str(min_segment_count(count)))
+COUNT_AUTO = """Pilih maksimal {COUNT} momen (minimal {MIN}). LEBIH BAIK SEDIKIT MOMEN YANG BAGUS daripada banyak momen biasa:
+momen yang tidak memenuhi kriteria wajib jangan dimasukkan hanya untuk menambah jumlah."""
+COUNT_EXACT = """Pilih TEPAT {COUNT} momen (pembuat klip membutuhkan sejumlah ini). Utamakan momen yang memenuhi semua
+kriteria wajib; bila jumlahnya kurang, lengkapi dengan momen terbaik berikutnya yang paling mendekati kriteria
+dan beri skor yang JUJUR (lebih rendah), jangan dinaikkan."""
+
+
+TYPE_GUIDES = {
+    "podcast": (
+        "PODCAST / WAWANCARA (2+ orang): cari insight yang jarang didengar, pengakuan jujur, perbedaan pendapat "
+        "antar pembicara, cerita pribadi dengan akhir tak terduga, angka konkret. Jika jawaban butuh pertanyaan "
+        "pembawa acara agar dipahami, mulai klip dari pertanyaannya."
+    ),
+    "solo": (
+        "BICARA SENDIRI (vlog, edukasi, opini ke kamera): satu argumen utuh dari klaim sampai alasan/contohnya, "
+        "pernyataan tegas yang bisa diperdebatkan, tips konkret yang langsung bisa dipakai."
+    ),
+    "presentation": (
+        "PRESENTASI / PANGGUNG (seminar, talk, stand-up, ceramah): punchline, angka mengejutkan, cerita dengan "
+        "twist, kalimat yang memancing tawa/tepuk tangan penonton. TOLAK bagian yang merujuk slide atau alat "
+        "peraga (\"seperti di layar ini\", \"lihat grafik ini\") karena tidak terlihat di klip vertikal."
+    ),
+    "streamer": (
+        "STREAMER (ngobrol / just chatting): reaksi spontan, cerita lucu, opini panas, interaksi dengan chat atau "
+        "donasi. Bila streamer menanggapi pesan chat, sertakan saat pesan itu dibacakan agar konteksnya jelas."
+    ),
+    "gaming": (
+        "STREAMING GAME: momen clutch/menang dramatis, gagal/kalah yang konyol, reaksi heboh (teriak, kaget, "
+        "tertawa), interaksi lucu dengan rekan tim. Transkrip hanya berisi ucapan, jadi tanda momen besar adalah "
+        "seruan, kata kaget, tawa, umpatan, atau perubahan nada mendadak. Sertakan 3-5 detik build-up sebelum "
+        "momennya. Untuk tipe ini syarat \"kalimat pembuka bisa jadi judul\" boleh diganti reaksi yang kuat."
+    ),
+    "other": (
+        "UMUM: terapkan kriteria wajib di atas apa adanya; pilih bagian dengan ide paling jelas dan emosi paling kuat."
+    ),
+}
+TYPE_KEYS = [k for k in clip_profile.VIDEO_TYPES if k != "auto"]
+
+
+def _type_block(video_type: str) -> str:
+    if video_type in TYPE_GUIDES:
+        return f"Tipe video sudah ditentukan pembuat klip. Isi detected_type dengan \"{video_type}\".\n- {TYPE_GUIDES[video_type]}"
+    guides = "\n".join(f"- {k}: {TYPE_GUIDES[k]}" for k in TYPE_KEYS)
+    return ("Tentukan dulu tipe video dari metadata dan transkrip, isi detected_type dengan SATU dari: "
+            f"{', '.join(TYPE_KEYS)}. Lalu terapkan panduan tipe itu:\n{guides}")
+
+
+def _language_rule(profile: dict) -> str:
+    source = profile.get("source_language", "auto")
+    output = profile.get("output_language", "id")
+    lines = []
+    if source in clip_profile.LANGUAGES:
+        lines.append(f"- Video ini berbahasa {clip_profile.LANGUAGES[source]}.")
+    lines.append("- detected_language: kode ISO 639-1 bahasa utama yang diucapkan di video (mis. \"id\", \"en\", \"ja\").")
+    if output == "same":
+        lines.append("- Tulis semua teks untuk penonton (topic, judul, hook, deskripsi, caption, thumbnail, why_viral) "
+                     "dalam BAHASA YANG SAMA dengan bahasa video.")
+    else:
+        lines.append(f"- Tulis semua teks untuk penonton (topic, judul, hook, deskripsi, caption, thumbnail, why_viral) "
+                     f"dalam bahasa {clip_profile.LANGUAGES.get(output, 'Indonesia')}, walaupun videonya berbahasa lain. "
+                     "Gaya bahasanya lisan dan natural untuk penutur asli bahasa itu, bukan terjemahan kaku.")
+    lines.append("- speaker_quote dan hook_line tetap VERBATIM dalam bahasa asli video.")
+    return "\n".join(lines)
+
+
+def get_clip_analysis_prompt(count: int = 10, profile: dict | None = None) -> str:
+    profile = clip_profile.sanitize(profile)
+    bounds = clip_profile.duration_bounds(profile)
+    lo, hi = bounds["ideal"]
+    exact = clip_profile.exact_count(profile)
+    return (_PROMPT
+            .replace("{COUNT_RULE}", COUNT_EXACT if exact else COUNT_AUTO)
+            .replace("{COUNT}", str(count))
+            .replace("{MIN}", str(min_segment_count(count, exact)))
+            .replace("{DUR_MIN}", str(bounds["min"]))
+            .replace("{DUR_MAX}", str(bounds["max"]))
+            .replace("{IDEAL_LO}", str(lo))
+            .replace("{IDEAL_HI}", str(hi))
+            .replace("{TYPE_BLOCK}", _type_block(profile["video_type"]))
+            .replace("{LANGUAGE_RULE}", _language_rule(profile)))
 
 
 _PROMPT = """
-Kamu adalah seorang ahli content clipping profesional untuk TikTok, YouTube Shorts, dan Instagram Reels, khusus untuk audiens Indonesia.
+Kamu editor klip profesional untuk TikTok, YouTube Shorts, dan Instagram Reels. Tugasmu memilih momen dari video
+panjang yang layak jadi klip vertikal berdiri sendiri.
 
-Kamu akan menerima metadata video YouTube (Judul, Channel, Deskripsi, dll) dan transkrip video dalam format:
+Kamu menerima metadata video dan transkrip berformat:
 [MM:SS - MM:SS] teks ucapan
-(untuk video lebih dari 1 jam, menit bisa lebih dari 59, mis. [75:30 - 75:34])
+(untuk video lebih dari 1 jam, menit bisa lebih dari 59, mis. [75:30 - 75:34]). Satu baris transkrip adalah
+potongan subtitle, BUKAN kalimat utuh.
 
-Tugasmu: baca seluruh transkrip dan metadata, pahami konteksnya, lalu identifikasi segmen terbaik yang berpotensi viral sebagai short-form video: MINIMAL {MIN}, maksimal {COUNT}.
-Gali seluruh video sampai menemukan minimal {MIN} momen; tambah sampai {COUNT} hanya bila momennya memang layak.
-Jangan memilih basa-basi pembuka atau promosi sponsor; nilai skornya dengan jujur (skor rendah tetap boleh dipilih).
-Segmen TIDAK BOLEH saling tumpang tindih, dan sebar pilihanmu ke seluruh durasi video (bukan hanya bagian awal).
-
----
-
-KRITERIA SEGMEN YANG LAYAK DIPILIH:
-- Durasi WAJIB 45 hingga 90 detik (ideal 45-70 detik). Segmen di bawah 45 detik TIDAK BOLEH dipilih —
-  kalau momennya singkat, perluas start_time/end_time agar mencakup konteks pembuka dan punchline/kesimpulannya.
-- Mengandung: insight mengejutkan, fakta tak terduga, momen lucu, konflik/debat, quote yang kuat, atau pengakuan jujur
-- Bisa berdiri sendiri — penonton yang belum pernah dengar podcast ini langsung paham tanpa konteks tambahan
-- Mengandung emosi kuat: tawa, kaget, inspirasi, relate, atau kontroversi
-- Momen yang benar-benar memancing tawa (candaan, cerita konyol, reaksi spontan) WAJIB ikut dipilih walaupun
-  tidak edukatif — momen lucu sering justru yang paling banyak ditonton.
-- Hindari segmen yang: hanya basa-basi pembuka, promosi produk/sponsor, atau kata-kata tidak jelas/terpotong
+{COUNT_RULE}
+Momen tidak boleh tumpang tindih; sebar ke seluruh durasi video bila kualitasnya setara.
 
 ---
 
-ATURAN WAJIB — BACA SEBELUM MENULIS APAPUN:
+KRITERIA WAJIB — momen hanya layak jika memenuhi SEMUA ini:
+1. Berdiri sendiri: penonton yang belum pernah menonton video ini tetap paham tanpa konteks tambahan.
+2. Satu ide tunggal, bukan dua topik yang disambung.
+3. Ada ketegangan: klaim mengejutkan, kontradiksi, pengakuan, angka konkret, atau cerita dengan akhir tak terduga.
+4. Kalimat pembukanya kuat, bisa berdiri sebagai judul artikel.
 
-1. GROUNDED IN TRANSCRIPT & METADATA
-   Setiap field HARUS BERDASARKAN kata-kata yang benar-benar ada di transkrip dan metadata.
-   DILARANG mengarang. Jika tidak yakin, jangan sertakan.
+TOLAK momen yang: basa-basi pembuka/penutup, saling memuji, bercanda tanpa isi, promosi sponsor, menjelaskan
+sesuatu yang butuh slide/visual, atau merujuk bagian lain video ("tadi kita bahas", "nanti kita lanjut").
+Momen lucu boleh dipilih bila tetap lucu tanpa konteks (sering justru paling banyak ditonton).
 
-2. TIMESTAMPS AKURAT
-   start_time dan end_time HARUS diambil PERSIS dari angka MM:SS yang ada di transkrip.
-   Format wajib: MM:SS (contoh: 03:45, atau 75:30 untuk video panjang)
+TIPE VIDEO
+{TYPE_BLOCK}
 
-3. PENILAIAN PER KOMPONEN (score_breakdown) — JUJUR DAN KRITIS
-   Nilai tiap komponen secara terpisah. Skor ini nanti digabung dengan data penonton nyata
+BAHASA
+{LANGUAGE_RULE}
+
+---
+
+ATURAN POTONG & DURASI
+- Durasi {DUR_MIN}-{DUR_MAX} detik, ideal {IDEAL_LO}-{IDEAL_HI} detik. Di luar rentang itu jangan dipilih.
+- start_time = awal kalimat pertama momen (bukan di tengah kalimat). end_time = setelah kalimat terakhir SELESAI
+  diucapkan; jika kalimat berlanjut ke baris transkrip berikutnya, ambil end_time baris itu.
+- Jangan pernah memotong di tengah kalimat atau sebelum punchline/kesimpulan.
+- hook_line: kalimat VERBATIM dari dalam momen yang paling layak jadi 3 detik pertama (boleh dari tengah klip).
+  hook_start: MM:SS saat kalimat itu mulai diucapkan.
+
+---
+
+ATURAN WAJIB LAINNYA
+
+1. GROUNDED: setiap field berdasarkan kata-kata yang benar-benar ada di transkrip dan metadata. DILARANG mengarang.
+
+2. TIMESTAMP: start_time, end_time, hook_start diambil PERSIS dari angka MM:SS di transkrip (format MM:SS).
+
+3. PENILAIAN PER KOMPONEN (score_breakdown) — JUJUR DAN KRITIS. Skor ini digabung dengan data penonton nyata
    (grafik "Most replayed" YouTube), jadi JANGAN menaikkan nilai agar terlihat bagus.
-   - hook (0-30): Apakah kalimat pertama segmen langsung membuat orang berhenti scroll?
-       25-30 = kalimat pembuka sangat kuat & spesifik | 15-24 = cukup menarik | 0-14 = pembuka datar / butuh konteks
-   - emosi (0-30): Seberapa kuat reaksi emosional (tawa, kaget, haru, marah, relate)?
-       25-30 = reaksi kuat & jelas di transkrip | 15-24 = ada emosi tapi sedang | 0-14 = informatif datar
-   - daya_tarik (0-20): Seberapa luas audiens Indonesia yang peduli topik ini?
+   - hook (0-30): apakah kalimat pertama langsung membuat orang berhenti scroll?
+       25-30 = sangat kuat & spesifik | 15-24 = cukup menarik | 0-14 = datar / butuh konteks
+   - emosi (0-30): seberapa kuat reaksi emosional (tawa, kaget, haru, marah, relate)?
+       25-30 = kuat & jelas di transkrip | 15-24 = sedang | 0-14 = informatif datar
+   - daya_tarik (0-20): seberapa luas audiens yang peduli topik ini?
        16-20 = relevan untuk umum | 10-15 = segmen tertentu | 0-9 = sangat niche
-   - penutup (0-20): Apakah segmen berakhir dengan payoff/punchline/kesimpulan yang tuntas?
-       16-20 = tuntas & memuaskan | 10-15 = cukup | 0-9 = menggantung / terpotong
-   Patokan realistis: kebanyakan segmen yang layak ada di total 55-80. Total di atas 85 hanya
-   untuk momen yang benar-benar luar biasa. Bedakan nilai antar segmen sesuai kualitasnya.
+   - penutup (0-20): apakah momen berakhir dengan payoff/punchline/kesimpulan yang tuntas?
+       16-20 = tuntas | 10-15 = cukup | 0-9 = menggantung / terpotong
+   Kebanyakan momen layak ada di total 55-80; di atas 85 hanya untuk yang benar-benar luar biasa.
 
-4. FIELD TERUKUR & KONTEKS
-   - speaker_quote: 1 kutipan VERBATIM (persis sama kata-katanya) paling kuat dari segmen ini.
-   - content_angle: Pilih SATU dari: EDUKASI, HIBURAN, INSPIRASI, KONTROVERSI, TUTORIAL.
-   - category: topik utama segmen, pilih SATU (huruf kecil) dari: bisnis, investasi, keuangan, marketing,
-     karier, teknologi, pendidikan, mindset, kesehatan, hubungan, sosial, hiburan, komedi, lainnya.
-       bisnis = usaha, entrepreneur, strategi perusahaan | investasi = saham, reksa dana, kripto, aset
-       keuangan = gaji, menabung, utang, keuangan pribadi | marketing = digital marketing, konten, personal branding, jualan online
-       karier = kerja, skill, produktivitas | teknologi = AI, gadget, perkembangan teknologi
-       pendidikan = sekolah, cara belajar, berpikir kritis, sains, sejarah, filsafat, tokoh pemikir
-       mindset = motivasi, pola pikir, kisah sukses | hiburan = gosip, selebriti, cerita hidup tanpa topik di atas
-       komedi = HANYA bila segmen terutama lucu dan tidak membahas topik lain di daftar
-       (candaan soal bisnis tetap "bisnis").
+4. FIELD KONTEKS
+   - speaker_quote: 1 kutipan VERBATIM paling kuat dari momen ini.
+   - content_angle: SATU dari EDUKASI, HIBURAN, INSPIRASI, KONTROVERSI, TUTORIAL.
+   - category: topik utama, SATU (huruf kecil) dari: bisnis, investasi, keuangan, marketing, karier, teknologi,
+     pendidikan, mindset, kesehatan, hubungan, sosial, hiburan, komedi, lainnya.
+       bisnis = usaha, strategi perusahaan | investasi = saham, reksa dana, kripto, aset
+       keuangan = gaji, menabung, utang | marketing = konten, personal branding, jualan online
+       karier = kerja, skill, produktivitas | teknologi = AI, gadget | pendidikan = belajar, sains, sejarah, filsafat
+       mindset = motivasi, pola pikir | hiburan = gosip, selebriti, game, cerita hidup tanpa topik di atas
+       komedi = HANYA bila momen terutama lucu dan tidak membahas topik lain di daftar.
 
-5. HOOK & CAPTION
-   Hook = teks besar di 3-5 detik pertama, dibaca sekilas sebelum orang scroll. Aturan:
-   - PENDEK: maksimal 6 kata (±35 karakter). Bahasa lisan sehari-hari, bukan kalimat berita.
-   - Buka rasa penasaran (open loop) tanpa membocorkan jawaban/akhir ceritanya.
-   - Spesifik ke isi segmen (angka, nama, situasi), jangan generik seperti "Kamu harus tahu ini".
+5. HOOK & CAPTION — hook = teks besar di 3-5 detik pertama:
+   - Maksimal 6 kata (±35 karakter), bahasa lisan sehari-hari.
+   - Buka rasa penasaran tanpa membocorkan akhirnya; spesifik (angka, nama, situasi), bukan generik.
    - Apit 1-2 kata kunci dengan bintang agar diberi warna, mis. "Gaji *2 juta* bisa beli rumah?"
    - Tanpa emoji, hashtag, atau tanda kutip.
-   Caption max 50 karakter + 3 hashtag (WAJIB TANPA EMOJI).
+   Caption maks 50 karakter + 3 hashtag, tanpa emoji.
 
-6. JUDUL & DESKRIPSI UPLOAD
-   Penonton Shorts tidak memilih video, mereka swipe; judul yang menang berbentuk cerita, konflik,
-   atau tantangan ke penonton, bukan judul materi kelas.
-   - short_title & title_options: maks 60 karakter, gaya cerita/konflik/rasa penasaran,
-     mis. "Dulu Sopir Angkot, Sekarang Orang Terkaya di Indonesia!" atau "Masih 20-an Tapi Udah Santai? Salah Besar!".
-   - JANGAN format "Topik | Nama Narasumber" dan jangan judul datar seperti "Apa itu Personal Branding?".
-     Sebut nama hanya bila orangnya sangat terkenal dan namanya bagian dari cerita.
+6. JUDUL & DESKRIPSI UPLOAD — penonton Shorts tidak memilih video, mereka swipe:
+   - short_title & title_options: maks 60 karakter, gaya cerita/konflik/rasa penasaran. JANGAN format
+     "Topik | Nama Narasumber" atau judul datar seperti judul materi kelas.
    - title_options: 3 judul dengan sudut berbeda (cerita, pertanyaan menantang, angka/fakta mengejutkan).
    - upload_description: 1-2 kalimat konteks yang membuat orang menonton sampai habis, tanpa hashtag & emoji.
-   - hashtags: 3 hashtag relevan huruf kecil tanpa spasi (1 topik luas mis. #bisnis, 2 spesifik), tanpa #shorts.
+   - hashtags: 3 hashtag huruf kecil tanpa spasi (1 topik luas, 2 spesifik), tanpa #shorts.
 
 ---
 
 OUTPUT FORMAT — KEMBALIKAN JSON INI PERSIS:
 
 {
+  "detected_type": "podcast",
+  "detected_language": "id",
   "segments": [
     {
       "segment_number": 1,
       "start_time": "MM:SS",
       "end_time": "MM:SS",
-      "topic": "1 kalimat singkat — apa yang terjadi di segmen ini",
-      "thumbnail_text": "Teks thumbnail 1-3 kata, BEDA dari judul, bikin penasaran; apit 1 kata kunci dengan bintang, mis. 'Ditolak *1 MILIAR*'",
-      "short_title": "Judul YouTube Shorts maks 60 karakter gaya cerita/konflik (lihat aturan 6), tanpa emoji, hashtag, atau tanda kutip",
+      "hook_line": "Kalimat verbatim terkuat dari dalam momen",
+      "hook_start": "MM:SS",
+      "topic": "1 kalimat singkat — apa yang terjadi di momen ini",
+      "thumbnail_text": "Teks thumbnail 1-3 kata, beda dari judul; apit 1 kata kunci dengan bintang",
+      "short_title": "Judul Shorts maks 60 karakter gaya cerita/konflik",
       "title_options": ["Judul cerita", "Judul pertanyaan menantang", "Judul angka/fakta mengejutkan"],
-      "upload_description": "1-2 kalimat deskripsi YouTube tanpa hashtag & emoji",
-      "hashtags": ["#bisnis", "#spesifik1", "#spesifik2"],
-      "why_viral": "2-3 kalimat — jelaskan SPESIFIK mengapa segmen ini berpotensi viral berdasarkan isi transkrip (hook, emosi, daya tarik, penutup).",
+      "upload_description": "1-2 kalimat deskripsi tanpa hashtag & emoji",
+      "hashtags": ["#topik", "#spesifik1", "#spesifik2"],
+      "why_viral": "1-2 kalimat SPESIFIK kenapa momen ini membuat orang berhenti scroll.",
       "emotion_trigger": "INSPIRASI atau TAWA atau KAGET atau RELATE atau KONTROVERSI",
       "score_breakdown": { "hook": 22, "emosi": 20, "daya_tarik": 14, "penutup": 13 },
-      "speaker_quote": "Kutipan langsung dari transkrip yang paling nendang.",
+      "speaker_quote": "Kutipan verbatim dari transkrip.",
       "content_angle": "EDUKASI",
       "category": "bisnis",
       "hooks": {
-        "hook_pertanyaan": "Pertanyaan maks 6 kata yang bikin penasaran, mis. 'Kenapa dia *nolak* 1 miliar?'",
-        "hook_pernyataan": "Pernyataan berani maks 6 kata, mis. 'Ini *kesalahan* terbesar saya'",
-        "hook_teaser": "Teaser maks 6 kata tanpa spoiler, mis. 'Tunggu sampai dia *jujur*'"
+        "hook_pertanyaan": "Pertanyaan maks 6 kata yang bikin penasaran",
+        "hook_pernyataan": "Pernyataan berani maks 6 kata",
+        "hook_teaser": "Teaser maks 6 kata tanpa spoiler"
       },
-      "caption_suggestion": "Caption max 50 karakter + 3 hashtag relevan tanpa emoji"
+      "caption_suggestion": "Caption maks 50 karakter + 3 hashtag tanpa emoji"
     }
   ],
-  "overall_video_summary": "2-3 kalimat ringkasan isi video secara keseluruhan",
+  "overall_video_summary": "2-3 kalimat ringkasan isi video",
   "best_segment_number": 1
 }
 
-Array "segments" WAJIB berisi {MIN} sampai {COUNT} segmen.
-
-INGAT: Kembalikan HANYA JSON murni. Tanpa penjelasan, tanpa markdown, tanpa backtick. JSON langsung.
+Urutkan segments dari momen terbaik. Kembalikan HANYA JSON murni, tanpa markdown atau penjelasan.
 """
 
 
-def clip_analysis_schema(count: int) -> dict:
+def clip_analysis_schema(count: int, exact: bool = False) -> dict:
     """
-    Skema JSON output Gemini. minItems menjaga agar model tidak hanya memberi 1 momen (model lite
-    cenderung begitu); jumlah maksimal dipotong di gemini_service. Skema sengaja dibuat sederhana (tanpa
-    enum, required bertingkat, atau maxItems): skema yang lebih rumit ditolak model dengan error 400.
+    Skema JSON output Gemini. minItems kecil menjaga model lite tidak hanya memberi 1 momen; jumlah maksimal
+    dipotong di gemini_service. Skema sengaja sederhana (tanpa enum, required bertingkat, atau maxItems):
+    skema yang lebih rumit ditolak model dengan error 400.
     """
     text = {"type": "string"}
     score = {"type": "integer"}
@@ -159,6 +246,8 @@ def clip_analysis_schema(count: int) -> dict:
             "segment_number": {"type": "integer"},
             "start_time": text,
             "end_time": text,
+            "hook_line": text,
+            "hook_start": text,
             "topic": text,
             "short_title": text,
             "title_options": {"type": "array", "items": text},
@@ -180,16 +269,19 @@ def clip_analysis_schema(count: int) -> dict:
             },
             "caption_suggestion": text,
         },
-        "required": ["segment_number", "start_time", "end_time", "topic", "short_title", "title_options", "upload_description", "hashtags",
-                     "thumbnail_text", "why_viral", "emotion_trigger",
-                     "score_breakdown", "speaker_quote", "content_angle", "category", "hooks", "caption_suggestion"],
+        "required": ["segment_number", "start_time", "end_time", "hook_line", "hook_start", "topic", "short_title",
+                     "title_options", "upload_description", "hashtags", "thumbnail_text", "why_viral",
+                     "emotion_trigger", "score_breakdown", "speaker_quote", "content_angle", "category", "hooks",
+                     "caption_suggestion"],
     }
     return {
         "type": "object",
         "properties": {
-            "segments": {"type": "array", "items": segment, "minItems": min_segment_count(count)},
+            "detected_type": text,
+            "detected_language": text,
+            "segments": {"type": "array", "items": segment, "minItems": min_segment_count(count, exact)},
             "overall_video_summary": text,
             "best_segment_number": {"type": "integer"},
         },
-        "required": ["segments", "overall_video_summary", "best_segment_number"],
+        "required": ["detected_type", "detected_language", "segments", "overall_video_summary", "best_segment_number"],
     }

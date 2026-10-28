@@ -2,6 +2,12 @@
 
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
+import { useCopy } from "@/components/LocaleProvider";
+
+const COPY = {
+  id: { empty: "Tempel link video YouTube dulu.", label: "Link video YouTube", reading: "Membaca transkrip…", find: "Cari momen" },
+  en: { empty: "Paste a YouTube video link first.", label: "YouTube video link", reading: "Reading transcript…", find: "Find moments" },
+};
 
 interface Props {
   /** Kembalikan pesan error untuk ditampilkan di bawah kolom, atau kosong jika valid */
@@ -13,11 +19,12 @@ interface Props {
 export default function AnalyzeForm({ onSubmit, isLoading, size = "md" }: Props) {
   const [url, setUrl] = useState("");
   const [urlError, setUrlError] = useState("");
+  const t = useCopy(COPY);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!url.trim()) {
-      setUrlError("Tempel link video YouTube dulu.");
+      setUrlError(t.empty);
       return;
     }
     const error = onSubmit(url.trim());
@@ -35,7 +42,7 @@ export default function AnalyzeForm({ onSubmit, isLoading, size = "md" }: Props)
     <form onSubmit={handleSubmit} noValidate>
       <div className="flex flex-col sm:flex-row gap-2">
         <label className={`field flex-1 ${height} ${urlError ? "border-tally" : ""}`}>
-          <span className="sr-only">Link video YouTube</span>
+          <span className="sr-only">{t.label}</span>
           <input
             type="url"
             inputMode="url"
@@ -56,10 +63,10 @@ export default function AnalyzeForm({ onSubmit, isLoading, size = "md" }: Props)
           {isLoading ? (
             <>
               <Loader2 className="size-4 animate-spin" aria-hidden />
-              Membaca transkrip…
+              {t.reading}
             </>
           ) : (
-            "Cari momen"
+            t.find
           )}
         </button>
       </div>

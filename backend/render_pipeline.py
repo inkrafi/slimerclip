@@ -1,10 +1,14 @@
 import json
 import os
 import subprocess
+
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
 from caption_service import get_caption_service
 import clip_effects
+import clip_profile
+import script_fonts
 from caption_styles import FONTS, FONTS_DIR
 from speaker_layout import SpeakerLayoutPlanner, _probe, sized
 import thumbnail
@@ -64,12 +68,83 @@ def _has_audio(path: str) -> bool:
         return True  # tidak bisa dicek: anggap ada
 
 
+def _text_font(text: str, default: str) -> str:
+    """Font untuk teks hook/watermark: Noto sesuai aksara jika teksnya non-Latin."""
+    family, _ = script_fonts.family_for(text or "")
+    return family or default
+
+
 def _remove_quietly(path: str):
     try:
         if os.path.exists(path):
             os.remove(path)
     except OSError as e:
         print(f"Gagal menghapus file sementara {path}: {e}")
+
+
+CUT_OUTWARD = 2.5     # detik: jendela pencarian ke arah luar klip (menambah konteks)
+CUT_INWARD = 1.0      # detik: jendela ke arah dalam klip (memotong sedikit)
+CUT_RATE = 16000
+CUT_FRAME = 0.01      # energi dihitung per 10 ms
+CUT_VALLEY = 0.12     # lembah energi minimal selebar ini (jeda antar kata/kalimat di podcast sering <0,25 dtk)
+CUT_PENALTY = (4.0, 7.0)  # dB per detik menjauh dari titik potong AI: (ke luar klip, ke dalam klip)
+CUT_MIN_DROP = 8.0    # lembah harus ≥8 dB di bawah median jendela, kalau tidak dianggap tidak ada jeda
+
+
+def _energy_db(video_path: str, t0: float, t1: float):
+    """Energi audio (dB) per 10 ms di rentang t0..t1, dihaluskan selebar CUT_VALLEY. None jika gagal."""
+    cmd = ["ffmpeg", "-v", "error", "-ss", f"{t0:.3f}", "-t", f"{t1 - t0:.3f}", "-i", video_path,
+           "-vn", "-ac", "1", "-ar", str(CUT_RATE), "-f", "s16le", "-"]
+    try:
+        raw = subprocess.run(cmd, capture_output=True, timeout=60).stdout
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    pcm = np.frombuffer(raw, np.int16).astype(np.float32) / 32768
+    hop = int(CUT_RATE * CUT_FRAME)
+    n = len(pcm) // hop
+    if n < 10:
+        return None
+    power = (pcm[:n * hop].reshape(n, hop) ** 2).mean(axis=1)
+    k = max(1, int(CUT_VALLEY / CUT_FRAME))
+    power = np.convolve(power, np.ones(k) / k, mode="same")
+    return 10 * np.log10(power + 1e-10)
+
+
+def _quietest(video_path: str, target: float, outward: int) -> float | None:
+    """
+    Titik paling hening di sekitar target (detik video sumber), dengan penalti jarak: jeda ke arah luar klip
+    lebih diutamakan. outward = -1 untuk awal klip (luar = lebih awal), +1 untuk akhir klip.
+    """
+    lo = max(0.0, target - (CUT_OUTWARD if outward < 0 else CUT_INWARD))
+    hi = target + (CUT_INWARD if outward < 0 else CUT_OUTWARD)
+    db = _energy_db(video_path, lo, hi)
+    if db is None:
+        return None
+    times = lo + (np.arange(len(db)) + 0.5) * CUT_FRAME
+    delta = times - target
+    is_out = np.sign(delta) == outward
+    cost = db + np.abs(delta) * np.where(is_out, CUT_PENALTY[0], CUT_PENALTY[1])
+    edge = int(CUT_VALLEY / CUT_FRAME)  # tepi jendela: hasil penghalusan tercampur nol (palsu terlihat hening)
+    cost[:edge] = cost[-edge:] = np.inf
+    i = int(np.argmin(cost))
+    if db[i] > np.median(db) - CUT_MIN_DROP:
+        return None
+    return float(times[i])
+
+
+def refine_cut(video_path: str, start: float, end: float) -> tuple[float, float]:
+    """
+    Geser awal & akhir klip ke jeda bicara terdekat (lembah energi audio), agar klip tidak dimulai/berakhir di
+    tengah kata atau kalimat. Rentang dari analisis berbasis baris subtitle (±3-4 detik, bukan kalimat), jadi
+    titik potongnya hampir selalu meleset sedikit. Tanpa jeda yang jelas → titik potong tidak diubah.
+    """
+    new_start = _quietest(video_path, start, -1)
+    new_end = _quietest(video_path, end, +1)
+    new_start = start if new_start is None else new_start
+    new_end = end if new_end is None else new_end
+    if new_end - new_start < 0.5 * (end - start):   # hasil tidak masuk akal → pakai rentang asli
+        return start, end
+    return round(new_start, 3), round(new_end, 3)
 
 
 class RenderPipeline:
@@ -100,8 +175,11 @@ class RenderPipeline:
         return sized(graph, target_w, target_h), summary
 
     def _layout_template(self, video_path, start_sec, end_sec, options, layout_path, callback):
-        tracking, split = options.get('smart_tracking', True), options.get('split_screen', True)
-        key = f"v2-{start_sec:.2f}-{end_sec:.2f}-{int(tracking)}{int(split)}"
+        tracking = options.get('smart_tracking', True)
+        # Split atas-bawah hanya untuk video dengan ≥2 orang bergantian bicara (podcast/lainnya)
+        split = options.get('split_screen', True) and options.get('video_type', 'auto') in clip_profile.SPLIT_TYPES
+        gaming = options.get('video_type') == 'gaming'
+        key = f"v2-{start_sec:.2f}-{end_sec:.2f}-{int(tracking)}{int(split)}{'g' if gaming else ''}"
         try:
             with open(layout_path, encoding="utf-8") as f:
                 cached = json.load(f)
@@ -113,8 +191,11 @@ class RenderPipeline:
         if tracking:
             if callback: callback({'status': 'tracking', 'progress': 10})
             try:
-                graph, summary = self.layout_planner.plan(
-                    video_path, start_sec, end_sec, allow_split=split, callback=callback)
+                if gaming:   # gameplay di atas, facecam di bawah
+                    graph, summary = self.layout_planner.plan_gaming(video_path, start_sec, end_sec, callback=callback)
+                else:
+                    graph, summary = self.layout_planner.plan(
+                        video_path, start_sec, end_sec, allow_split=split, callback=callback)
             except Exception as e:
                 print(f"Tata letak pembicara gagal: {e}, fallback ke crop tengah.")
                 return self.layout_planner.center_plan(video_path)
@@ -155,7 +236,8 @@ class RenderPipeline:
             json.dump({"range": [round(start, 3), round(end, 3)], "segments": segments}, f, ensure_ascii=False)
         os.replace(tmp, words_path)
 
-    def _transcript_for(self, video_path, start_sec, end_sec, words_path, temp_audio_path) -> list:
+    def _transcript_for(self, video_path, start_sec, end_sec, words_path, temp_audio_path, language=None,
+                        subtitle_language=None) -> list:
         """
         Transkrip (dengan waktu per kata) untuk rentang klip, relatif terhadap awal klip.
 
@@ -173,12 +255,21 @@ class RenderPipeline:
                 "-vn", "-ac", "1", "-ar", "16000", temp_audio_path
             ], "Gagal mengekstrak audio")
             segments = []
-            for seg in self.caption_service.transcribe(temp_audio_path):
+            for seg in self.caption_service.transcribe(temp_audio_path, language=language):
                 words = [{"start": round(start_sec + w["start"], 3), "end": round(start_sec + w["end"], 3),
                           "word": w["word"]} for w in seg.get("words") or []]
                 if words:
                     segments.append({"start": words[0]["start"], "end": words[-1]["end"],
                                      "text": seg["text"].strip(), "words": words})
+            # Subtitle beda bahasa (mis. klip Inggris, subtitle Indonesia): terjemahkan sebelum disimpan, jadi teks
+            # yang diedit di editor dan yang dirender sudah dalam bahasa subtitle
+            spoken = language or getattr(self.caption_service, "last_language", None)
+            if subtitle_language and segments and (spoken or "").split("-")[0] != subtitle_language:
+                try:
+                    import subtitle_translate
+                    segments = subtitle_translate.translate_segments(segments, subtitle_language)
+                except Exception as e:
+                    print(f"Terjemahan subtitle gagal, memakai bahasa asli: {e!r}")
             lo, hi = start_sec, end_sec
             if stored and stored["range"][0] < end_sec and stored["range"][1] > start_sec:
                 # Tumpang tindih dengan rentang lama: di dalamnya pakai transkrip lama (mungkin sudah diedit)
@@ -226,7 +317,7 @@ class RenderPipeline:
                 graph += f";[{label}][1:v]overlay=format=auto[vshade]"
                 label = "vshade"
             # Durasi panjang agar teks tidak sedang memudar pada detik `at`
-            text = clip_effects.hook_ass(hook, at + 10, FONTS.get(hook.get('font'), FONTS["montserrat"]))
+            text = clip_effects.hook_ass(hook, at + 10, _text_font(hook.get('text'), FONTS.get(hook.get('font'), FONTS["montserrat"])))
             if text:
                 with open(os.path.join(output_dir, ass_name), "w", encoding="utf-8") as f:
                     f.write(text)
@@ -271,6 +362,10 @@ class RenderPipeline:
         edit = options.get('edit')
         if edit:
             start_sec, end_sec = edit['start'], edit['end']
+        else:
+            # Rentang dari analisis berbasis baris subtitle (bukan kalimat) → geser ke jeda bicara terdekat.
+            # Rentang hasil edit di editor dipakai apa adanya.
+            start_sec, end_sec = refine_cut(video_path, start_sec, end_sec)
         duration = end_sec - start_sec
         if duration <= 0:
             raise Exception(f"Rentang waktu tidak valid: {segment.get('start_time')} – {segment.get('end_time')}")
@@ -297,16 +392,25 @@ class RenderPipeline:
         try:
             # 1+2. Tata letak 9:16 (lacak wajah) dan transkrip (Whisper) dikerjakan bersamaan: keduanya
             # berat di CPU tapi saling lepas. Transkrip selalu disiapkan saat pratinjau, untuk caption di editor.
-            need_transcript = preview or options.get('caption_enabled', True)
+            # Final selalu butuh transkrip (caption dan file SRT); biasanya sudah tersimpan dari pratinjau
+            need_transcript = True
             with ThreadPoolExecutor(max_workers=1) as pool:
                 transcript_job = pool.submit(self._transcript_for, video_path, start_sec, end_sec,
-                                             words_path, temp_audio_path) if need_transcript else None
+                                             words_path, temp_audio_path, options.get('language'),
+                                             options.get('subtitle_language')) if need_transcript else None
                 layout_graph, layout_summary = self._layout_for(
                     video_path, start_sec, end_sec, target_w, target_h, options, layout_path, callback)
                 if transcript_job:
                     if callback and not transcript_job.done():
                         callback({'status': 'transcribing', 'progress': 35})
                     transcribed = transcript_job.result()
+
+            # Subtitle SRT (final saja): diunduh terpisah / ikut ZIP, untuk klien yang memasang subtitle sendiri
+            if not preview:
+                try:
+                    self.caption_service.write_srt(transcribed, os.path.join(output_dir, f"{base_name}.srt"))
+                except OSError as e:
+                    print(f"Gagal menulis SRT: {e}")
 
             # Caption ASS (final saja)
             ass_filter = ""
@@ -328,7 +432,11 @@ class RenderPipeline:
             marks = edit.get('marks') or {}
             extra_inputs = []  # input FFmpeg tambahan (index 1, 2, …)
             graph, label = layout_graph, "vlayout"
-            if not preview:
+            if not preview and (edit.get('enhance') or {}).get('video'):
+                # Filter HD (sebelum caption, agar teks tidak ikut diproses): sudah termasuk penajaman
+                graph += f";[{label}]{clip_effects.VIDEO_ENHANCE}[venh]"
+                label = "venh"
+            elif not preview:
                 # Sumber 1080p di-crop 9:16 hanya ±600 px lebar; saat di-upscale, sedikit penajaman
                 # (sebelum caption, agar teks tidak ikut ditajamkan) membuat hasil tidak lembek
                 src_h = _probe(video_path)[1]
@@ -354,13 +462,15 @@ class RenderPipeline:
             logo_path = self._asset_path(assets_dir, (marks.get('logo') or {}).get('asset'))
             layout = clip_effects.marks_layout(marks, self._image_aspect(logo_path))
             steps = [f for f in (clip_effects.vignette_filter(vignette), ass_filter) if f]
-            hook_text = clip_effects.hook_ass(hook, duration, FONTS.get(hook.get('font'), FONTS["montserrat"])) if hook else None
+            hook_font = _text_font(hook.get('text'), FONTS.get(hook.get('font'), FONTS["montserrat"])) if hook else None
+            hook_text = clip_effects.hook_ass(hook, duration, hook_font) if hook else None
             if hook_text:
                 hook_name = f"{base_name}.hook.ass"
                 with open(os.path.join(output_dir, hook_name), "w", encoding="utf-8") as f:
                     f.write(hook_text)
                 steps.append(f"ass={hook_name}:fontsdir={_fonts_dir_for(output_dir)}")
-            marks_text = clip_effects.marks_ass(marks, layout, duration, FONTS["poppins-semibold"])
+            mark_words = " ".join(str((marks.get(k) or {}).get('text') or "") for k in marks if isinstance(marks.get(k), dict))
+            marks_text = clip_effects.marks_ass(marks, layout, duration, _text_font(mark_words, FONTS["poppins-semibold"]))
             if marks_text:
                 mark_name = f"{base_name}.mark.ass"
                 with open(os.path.join(output_dir, mark_name), "w", encoding="utf-8") as f:
@@ -388,7 +498,8 @@ class RenderPipeline:
                 if path and 0 <= offset < duration and item['volume'] > 0:
                     extra_inputs.append(["-i", path])
                     sfx_inputs.append((len(extra_inputs), offset, item['volume']))
-            audio = clip_effects.audio_graph(music, music_index, sfx_inputs, duration, _has_audio(video_path), "aout")
+            audio = clip_effects.audio_graph(music, music_index, sfx_inputs, duration, _has_audio(video_path), "aout",
+                                             edit.get('voice'))
             audio_map = ["-map", "0:a:0?"]
             if audio:
                 graph += ";" + audio

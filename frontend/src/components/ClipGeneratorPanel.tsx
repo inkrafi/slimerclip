@@ -159,7 +159,7 @@ export default function ClipGeneratorPanel({
               aria-checked={videoSourceMode === opt.id}
               onClick={() => setVideoSourceMode(opt.id)}
               disabled={isGenerating}
-              className={`h-8 rounded-[5px] font-medium ${videoSourceMode === opt.id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}
+              className={`h-8 rounded-[5px] font-semibold ${videoSourceMode === opt.id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}
             >
               {opt.label}
             </button>
@@ -170,7 +170,7 @@ export default function ClipGeneratorPanel({
           uploadedFile ? (
             <div className="flex items-center gap-3 rounded-md bg-raised px-3 py-2.5">
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-ink">{uploadedFile.filename}</p>
+                <p className="truncate text-sm font-semibold text-ink">{uploadedFile.filename}</p>
                 <p className="text-xs text-ink-muted">{uploadedFile.file_size_mb} MB, siap dipakai</p>
               </div>
               <button

@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { Download, Loader2, Pencil } from 'lucide-react'
 import BatchRenderBar from '@/components/BatchRenderBar'
 import RequireAuth from '@/components/RequireAuth'
+import ReviewLinksPanel from '@/components/ReviewLinksPanel'
+import { useAuth } from '@/components/AuthProvider'
 import UploadKitPanel from '@/components/UploadKitPanel'
 import { downloadUrl, getVideo } from '@/lib/api'
 import { formatClock, formatSpan, toSeconds } from '@/lib/clip-meta'
@@ -30,6 +32,7 @@ export default function ClipsPage({ params }: { params: Promise<{ id: string }> 
 function Clips({ id }: { id: string }) {
   const [detail, setDetail] = useState<VideoDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { me } = useAuth()
 
   const load = useCallback(() => {
     getVideo(id).then(setDetail).catch(e => setError(e.message))
@@ -48,6 +51,7 @@ function Clips({ id }: { id: string }) {
       {detail && detail.clips.length > 0 && (
         <BatchRenderBar videoId={id} clipCount={detail.clips.filter(c => !c.legacy).length} zipUrl={detail.zip_url} onDone={load} />
       )}
+      {me?.is_admin && detail && <ReviewLinksPanel videoId={id} clips={detail.clips} videoTitle={title === id ? '' : title} />}
 
       <div className="mt-10">
         {error ? (
@@ -105,6 +109,11 @@ function Clips({ id }: { id: string }) {
                     {clip.url && (
                       <a href={downloadUrl(clip.url)} download className="btn btn-sm btn-primary">
                         <Download className="size-3.5" aria-hidden /> Unduh
+                      </a>
+                    )}
+                    {clip.srt_url && (
+                      <a href={downloadUrl(clip.srt_url)} download className="btn btn-sm btn-quiet" title="Subtitle terpisah (.srt) dengan teks hasil edit">
+                        SRT
                       </a>
                     )}
                     {!clip.legacy && (

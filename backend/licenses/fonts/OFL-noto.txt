@@ -1,0 +1,6 @@
+Noto Sans JP / KR / SC / Arabic / Thai / Devanagari
+Copyright 2014-2024 Google LLC and the Noto Project Authors (https://github.com/notofonts)
+
+Dilisensikan di bawah SIL Open Font License, Version 1.1: https://openfontlicense.org
+File font diunduh otomatis oleh backend/script_fonts.py saat pertama dibutuhkan (teks non-Latin)
+dari https://github.com/notofonts/noto-cjk dan https://github.com/notofonts/notofonts.github.io

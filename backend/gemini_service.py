@@ -8,6 +8,7 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
+import clip_profile
 from niche import normalize_category
 from prompt_templates import clip_analysis_schema, get_clip_analysis_prompt, target_segment_count
 from scoring import score_segments
@@ -102,11 +103,13 @@ def validate_api_key(api_key: str) -> str | None:
 
 
 def _looser_schema(schema: dict) -> dict | None:
-    """minItems > 5 → 5; sudah 5 atau kurang → tanpa skema."""
+    """minItems > 12 → 12; > 5 → 5; sudah 5 atau kurang → tanpa skema."""
     segments = schema["properties"]["segments"]
-    if segments.get("minItems", 0) > 5:
-        print(f"[Gemini] Skema ditolak model {GEMINI_MODEL}, mencoba dengan minimal 5 momen")
-        return {**schema, "properties": {**schema["properties"], "segments": {**segments, "minItems": 5}}}
+    current = segments.get("minItems", 0)
+    if current > 5:
+        target = 12 if current > 12 else 5
+        print(f"[Gemini] Skema ditolak model {GEMINI_MODEL}, mencoba dengan minimal {target} momen")
+        return {**schema, "properties": {**schema["properties"], "segments": {**segments, "minItems": target}}}
     print(f"[Gemini] Skema ditolak model {GEMINI_MODEL}, mencoba tanpa skema")
     return None
 
@@ -172,12 +175,13 @@ def _gemini_error_message(e: Exception, own_key: bool = False) -> str:
 
 
 def analyze_youtube_video(youtube_url: str, api_key: str | None = None, media_path: str | None = None,
-                          allow_download: bool = False) -> dict:
+                          allow_download: bool = False, profile: dict | None = None) -> dict:
     """
     Ambil transkrip + metadata video YouTube lalu kirim ke Gemini untuk dianalisis.
 
     - api_key: key Gemini milik pengguna (None = key server)
     - media_path / allow_download: sumber transkripsi Whisper jika YouTube tidak memberi transkrip
+    - profile: profil analisis (clip_profile.sanitize); None = default otomatis
 
     Return:
     - dict berisi hasil analisis jika berhasil
@@ -190,14 +194,17 @@ def analyze_youtube_video(youtube_url: str, api_key: str | None = None, media_pa
     if not video_id:
         return {"error": "Tidak bisa menemukan ID Video dari URL tersebut."}
 
+    profile = clip_profile.sanitize(profile)
+    language = profile["source_language"] if profile["source_language"] in clip_profile.LANGUAGES else None
+
     # Metadata dulu: info yt-dlp yang sama dipakai untuk mencari subtitle cadangan
     info = _extract_info(youtube_url)
     metadata = get_video_metadata(info)
 
     # Transkrip (cache → youtube-transcript-api → subtitle yt-dlp → Whisper lokal)
     try:
-        transcript_lines, transcript_source = get_transcript_lines(video_id, youtube_url, info,
-                                                                 media_path=media_path, allow_download=allow_download)
+        transcript_lines, transcript_source = get_transcript_lines(video_id, youtube_url, info, media_path=media_path,
+                                                                 allow_download=allow_download, language=language)
     except TranscriptUnavailable as e:
         return {"error": str(e), "code": "transcript_unavailable"}
     formatted_transcript = _format_transcript(transcript_lines)
@@ -222,9 +229,11 @@ Deskripsi Singkat: {metadata.get('description')}
     )
 
     try:
-        count = target_segment_count(metadata.get("duration") or (transcript_lines[-1][1] if transcript_lines else 0))
-        result_data = _call_gemini(get_clip_analysis_prompt(count), user_text, api_key=api_key,
-                                   schema=clip_analysis_schema(count))
+        length = metadata.get("duration") or (transcript_lines[-1][1] if transcript_lines else 0)
+        count = target_segment_count(length, profile)
+        ask = clip_profile.ask_count(profile, length)
+        result_data = _call_gemini(get_clip_analysis_prompt(ask, profile), user_text, api_key=api_key,
+                                   schema=clip_analysis_schema(ask, clip_profile.exact_count(profile)))
     except json.JSONDecodeError:
         return {"error": "AI tidak mengembalikan format JSON yang valid setelah 3 percobaan. Coba video lain atau coba lagi."}
     except Exception as e:
@@ -237,7 +246,8 @@ Deskripsi Singkat: {metadata.get('description')}
     # Skor akhir: gabungan penilaian AI, data "Most replayed" YouTube, dan struktur momen
     video_duration = metadata.get("duration") or (transcript_lines[-1][1] if transcript_lines else 0)
     from_ai = len(result_data["segments"])
-    scored = score_segments(result_data["segments"], transcript_lines, metadata.get("heatmap") or [], video_duration)
+    scored = score_segments(result_data["segments"], transcript_lines, metadata.get("heatmap") or [], video_duration,
+                            clip_profile.duration_bounds(profile))
     for seg in scored:
         seg["category"] = normalize_category(seg.get("category"))
     # Skema tidak bisa membatasi jumlah maksimal → ambil yang skornya tertinggi
@@ -247,8 +257,13 @@ Deskripsi Singkat: {metadata.get('description')}
     result_data["total_clip_recommendations"] = len(result_data["segments"])
     if not result_data["segments"]:
         return {"error": "AI tidak menemukan momen dengan timestamp yang valid. Coba analisis ulang."}
-    result_data["scoring_version"] = 2
+    result_data["scoring_version"] = 3
     result_data["transcript_source"] = transcript_source
+    # Profil yang dipakai + hasil deteksi (tipe video menentukan tata letak, bahasa menentukan Whisper saat render)
+    detected_type = str(result_data.get("detected_type") or "").strip().lower()
+    result_data["profile"] = profile
+    result_data["video_type"] = clip_profile.resolved_type(profile, detected_type)
+    result_data["language"] = clip_profile.resolved_language(profile, result_data.get("detected_language"))
 
     if metadata:
         result_data["video_metadata"] = metadata

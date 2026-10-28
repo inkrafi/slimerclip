@@ -41,13 +41,21 @@ QUIET_LEVEL = 4.0          # di bawah ini dianggap tidak ada yang bicara
 SCALE_FULL = "scale=@W@:@H@:flags=lanczos,setsar=1"
 SCALE_TOP = "scale=@W@:@HT@:flags=lanczos,setsar=1"
 SCALE_BOTTOM = "scale=@W@:@HB@:flags=lanczos,setsar=1"
+# Streaming game: gameplay di atas (60%), facecam di bawah (40%)
+GAME_SHARE = 0.6
+SCALE_GAME = "scale=@W@:@HG@:flags=lanczos,setsar=1"
+SCALE_CAM = "scale=@W@:@HC@:flags=lanczos,setsar=1"
+FACECAM_MIN_PRESENCE = 0.3   # wajah facecam harus terlihat di ≥30% sampel, kalau tidak dianggap tanpa facecam
+FACECAM_SPAN = 3.2           # tinggi crop facecam = 3,2x tinggi wajah (wajah + bahu, kira-kira jendela kameranya)
 
 
 def sized(template: str, out_w: int, out_h: int) -> str:
     """Isi ukuran output (out_w x out_h) ke templat graph dari plan()/center_graph()."""
     top = _even(out_h / 2)
+    game = _even(out_h * GAME_SHARE)
     return (template.replace("@W@", str(out_w)).replace("@HT@", str(top))
-            .replace("@HB@", str(out_h - top)).replace("@H@", str(out_h)))
+            .replace("@HB@", str(out_h - top)).replace("@HG@", str(game)).replace("@HC@", str(out_h - game))
+            .replace("@H@", str(out_h)))
 
 
 def ensure_model() -> str:
@@ -402,6 +410,58 @@ class SpeakerLayoutPlanner:
         summary = {k: round(v, 1) if isinstance(v, float) else v for k, v in summary.items()}
         summary["mode"] = "speaker"
         return ";".join(parts), summary
+
+    def plan_gaming(self, video_path, start, end, callback=None) -> tuple:
+        """
+        Streaming game: gameplay di atas, facecam streamer di bawah. Facecam = overlay kecil di posisi tetap,
+        jadi posisinya diambil dari sel grid yang paling sering berisi wajah sepanjang klip (wajah karakter game
+        berpindah-pindah, facecam tidak). Tanpa facecam → crop gameplay di tengah (tata letak penuh).
+        """
+        src_w, src_h = _probe(video_path)
+        if src_w / src_h <= 9 / 16 + 0.01:
+            return self.center_graph(src_w, src_h), {"mode": "center"}
+        shots, n_samples = self._analyze(video_path, start, max(0.1, end - start), src_w, src_h, callback)
+        points = [p for shot in shots for track in shot["tracks"] for p in track.samples.values()]
+        if not points or n_samples == 0:
+            return self.center_graph(src_w, src_h), {"mode": "center"}
+        cells: dict = {}
+        for cx, cy, fh, _ in points:
+            cells.setdefault((int(cx / src_w * 6), int(cy / src_h * 6)), []).append((cx, cy, fh))
+        best = max(cells.values(), key=len)
+        if len(best) < n_samples * FACECAM_MIN_PRESENCE:
+            return self.center_graph(src_w, src_h), {"mode": "center"}
+        arr = np.array(best)
+        cx, cy, fh = (float(np.median(arr[:, i])) for i in range(3))
+        return self.gaming_graph(src_w, src_h, cx, cy, fh), {
+            "mode": "gaming", "facecam": [round(cx), round(cy), round(fh)]}
+
+    @staticmethod
+    def gaming_graph(src_w, src_h, cx, cy, fh, out_w=1080, out_h=1920) -> str:
+        """Templat graph gameplay (atas) + facecam (bawah); perbandingan crop mengikuti ukuran tiap panel."""
+        game_h = _even(out_h * GAME_SHARE)
+        cam_aspect = out_w / (out_h - game_h)
+        game_aspect = out_w / game_h
+
+        ch = _even(min(src_h, max(src_h * 0.15, fh * FACECAM_SPAN)))
+        cw = _even(min(src_w, ch * cam_aspect))
+        ch = _even(min(ch, cw / cam_aspect))
+        cam_x = int(max(0, min(src_w - cw, cx - cw / 2)))
+        cam_y = int(max(0, min(src_h - ch, cy - ch * 0.45)))
+
+        gh = _even(min(src_h, src_w / game_aspect))
+        gw = _even(min(src_w, gh * game_aspect))
+        game_x = (src_w - gw) // 2
+        # Facecam ikut terpotong di panel gameplay → geser gameplay menjauh dari facecam bila masih muat
+        if cam_x < game_x + gw and cam_x + cw > game_x:
+            if cx < src_w / 2 and cam_x + cw + gw <= src_w:
+                game_x = cam_x + cw
+            elif cx >= src_w / 2 and cam_x - gw >= 0:
+                game_x = cam_x - gw
+        game_y = (src_h - gh) // 2
+        return (f"[0:v]split=2[sg][sc];"
+                f"[sg]crop={gw}:{gh}:{game_x}:{game_y},{SCALE_GAME}[bgame];"
+                f"[sc]crop={cw}:{ch}:{cam_x}:{cam_y},{SCALE_CAM}[bcam];"
+                f"[bgame][bcam]vstack=2[vlayout]")
 
     @staticmethod
     def center_graph(src_w, src_h) -> str:

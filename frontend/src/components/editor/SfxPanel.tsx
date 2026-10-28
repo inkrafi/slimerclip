@@ -10,8 +10,8 @@ type Sfx = EditRecipe['sfx'][number]
 
 interface Props {
   sfx: Sfx[]
-  /** Efek suara bawaan (backend/sfx) */
-  library: { name: string; label: string; url: string }[]
+  /** Efek suara bawaan (backend/sfx), per kategori */
+  library: { name: string; label: string; group: string; url: string }[]
   assets: EditorAsset[]
   /** Rentang klip (detik video sumber) */
   range: [number, number]
@@ -24,12 +24,17 @@ interface Props {
 }
 
 const MAX_SFX = 30
+const UPLOADS = 'Upload kamu'
 const fmt = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`
 
 /** Efek suara (pustaka bawaan atau upload sendiri) yang diputar di detik tertentu dalam klip. */
 export default function SfxPanel({ sfx, library, assets, range, playhead, disabled, onChange, onAssetsChange, onSeek }: Props) {
-  const uploads = assets.filter(a => a.kind === 'audio')
+  // Upload kecil tanpa tanda suasana = efek suara (lagu bertanda suasana / file besar ada di panel musik)
+  const uploads = assets.filter(a => a.kind === 'audio' && a.mood_source !== 'tag' && a.size_mb < 1.5)
   const sounds = [...library, ...uploads]
+  const groups = [...new Set(library.map(a => a.group))]
+  const [group, setGroup] = useState(groups[0] ?? '')
+  const shown = group === UPLOADS ? uploads : library.filter(a => a.group === group)
   const input = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const here = () => Math.round(Math.min(Math.max(playhead ?? range[0], range[0]), range[1] - 0.1) * 10) / 10
@@ -38,14 +43,23 @@ export default function SfxPanel({ sfx, library, assets, range, playhead, disabl
 
   const add = (asset: string) => onChange([...sfx, { asset, at: here(), volume: 80 }].sort((a, b) => a.at - b.at))
 
-  const upload = async (file: File) => {
+  // Bisa banyak file sekaligus (mis. satu paket SFX); file disimpan sebagai aset, tidak langsung ditaruh di klip
+  const upload = async (files: File[]) => {
     setUploading(true)
+    const added: EditorAsset[] = []
     try {
-      const asset = await uploadAsset(file)
-      onAssetsChange([asset, ...assets])
-      if (asset.kind === 'audio' && sfx.length < MAX_SFX) add(asset.name)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Upload efek suara gagal.')
+      for (const file of files) {
+        try {
+          added.push(await uploadAsset(file))
+        } catch (e) {
+          toast.error(`${file.name}: ${e instanceof Error ? e.message : 'upload gagal'}`)
+        }
+      }
+      if (added.length) {
+        onAssetsChange([...added, ...assets])
+        setGroup(UPLOADS)
+        toast.success(`${added.length} efek suara ditambahkan`)
+      }
     } finally {
       setUploading(false)
       if (input.current) input.current.value = ''
@@ -78,9 +92,11 @@ export default function SfxPanel({ sfx, library, assets, range, playhead, disabl
                     onChange={e => update(i, { asset: e.target.value })}
                     className="min-w-0 flex-1 rounded-md border border-rule bg-bay px-2 h-8 text-ink"
                   >
-                    <optgroup label="Pustaka">
-                      {library.map(a => <option key={a.name} value={a.name}>{a.label}</option>)}
-                    </optgroup>
+                    {groups.map(g => (
+                      <optgroup key={g} label={g}>
+                        {library.filter(a => a.group === g).map(a => <option key={a.name} value={a.name}>{a.label}</option>)}
+                      </optgroup>
+                    ))}
                     {uploads.length > 0 && (
                       <optgroup label="Upload kamu">
                         {uploads.map(a => <option key={a.name} value={a.name}>{a.label}</option>)}
@@ -122,8 +138,16 @@ export default function SfxPanel({ sfx, library, assets, range, playhead, disabl
 
       <div>
         <p className="text-xs text-ink-muted">Tambahkan di posisi video saat ini:</p>
-        <ul className="mt-1.5 flex flex-wrap gap-1.5">
-          {[...library, ...uploads].map(a => (
+        <div role="tablist" aria-label="Kategori efek suara" className="mt-1.5 flex flex-wrap gap-1">
+          {[...groups, ...(uploads.length ? [UPLOADS] : [])].map(g => (
+            <button key={g} type="button" role="tab" aria-selected={group === g} onClick={() => setGroup(g)}
+              className={`h-7 rounded-full px-3 text-xs ${group === g ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
+              {g}{g === UPLOADS ? ` (${uploads.length})` : ''}
+            </button>
+          ))}
+        </div>
+        <ul className="mt-2 flex flex-wrap gap-1.5">
+          {shown.map(a => (
             <li key={a.name} className="flex items-center rounded-md border border-rule">
               <button type="button" onClick={() => preview(a.name)} aria-label={`Dengarkan ${a.label}`}
                 className="grid size-8 place-items-center rounded-l-md text-ink-muted hover:bg-raised hover:text-ink">
@@ -138,15 +162,18 @@ export default function SfxPanel({ sfx, library, assets, range, playhead, disabl
         </ul>
       </div>
       <div className="flex flex-wrap gap-2">
-        <input ref={input} type="file" accept=".mp3,.m4a,.aac,.wav,.ogg" className="sr-only" tabIndex={-1}
-          onChange={e => e.target.files?.[0] && upload(e.target.files[0])} />
+        <input ref={input} type="file" accept=".mp3,.m4a,.aac,.wav,.ogg" multiple className="sr-only" tabIndex={-1}
+          onChange={e => e.target.files?.length && upload([...e.target.files])} />
         <button type="button" className="btn btn-sm btn-quiet" disabled={disabled || uploading} onClick={() => input.current?.click()}>
           {uploading ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Upload className="size-3.5" aria-hidden />}
           Upload efek suara
         </button>
       </div>
       <p className="text-xs text-ink-faint">
-        Putar video, berhenti di titik yang diinginkan, lalu klik efeknya. Upload sendiri: MP3, WAV, OGG, maks 30 MB.
+        Putar video, berhenti di titik yang diinginkan, lalu klik efeknya. Upload sendiri (bisa banyak sekaligus): MP3, WAV,
+        OGG. File kecil yang namanya berisi kata kuncinya, mis. <span className="font-mono text-ink">vine_boom.mp3</span>,
+        <span className="font-mono text-ink"> whoosh.wav</span>, <span className="font-mono text-ink">kaching.mp3</span>, dipakai
+        otomatis oleh edit otomatis menggantikan bunyi bawaan sejenis.
       </p>
     </div>
   )

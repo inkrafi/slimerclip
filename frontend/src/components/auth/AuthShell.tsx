@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import { useAuth } from '@/components/AuthProvider'
 import GoogleMark from '@/components/GoogleMark'
+import { useCopy, useLocale } from '@/components/LocaleProvider'
 import { authErrorMessage } from '@/lib/auth-errors'
 
 interface AuthShellProps {
@@ -16,11 +17,18 @@ interface AuthShellProps {
   footer?: React.ReactNode
 }
 
+const COPY = {
+  id: { google: 'Lanjutkan dengan Google', or: 'atau dengan email', hide: 'Sembunyikan kata sandi', show: 'Tampilkan kata sandi' },
+  en: { google: 'Continue with Google', or: 'or with email', hide: 'Hide password', show: 'Show password' },
+}
+
 /** Kerangka halaman masuk/daftar: judul, tombol Google, pemisah, lalu form email. */
 export default function AuthShell({ title, intro, googleNext, children, footer }: AuthShellProps) {
   const { signInWithGoogle } = useAuth()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { locale } = useLocale()
+  const t = useCopy(COPY)
 
   const google = async () => {
     setBusy(true)
@@ -28,7 +36,7 @@ export default function AuthShell({ title, intro, googleNext, children, footer }
     try {
       await signInWithGoogle(googleNext)  // browser berpindah ke halaman Google
     } catch (e) {
-      setError(authErrorMessage(e))
+      setError(authErrorMessage(e, locale))
       setBusy(false)
     }
   }
@@ -47,12 +55,12 @@ export default function AuthShell({ title, intro, googleNext, children, footer }
             className="mt-8 btn h-11 w-full bg-white text-[#1f1f1f] hover:bg-white/90 font-semibold"
           >
             {busy ? <Loader2 className="size-5 animate-spin" aria-hidden /> : <GoogleMark />}
-            Lanjutkan dengan Google
+            {t.google}
           </button>
           {error && <p role="alert" className="mt-2 text-sm text-tally">{error}</p>}
           <div className="my-6 flex items-center gap-3 text-xs text-ink-faint" aria-hidden>
             <span className="h-px flex-1 bg-rule" />
-            atau dengan email
+            {t.or}
             <span className="h-px flex-1 bg-rule" />
           </div>
         </>
@@ -72,6 +80,7 @@ interface FieldProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, '
 export function AuthField({ label, hint, type = 'text', ...input }: FieldProps) {
   const [visible, setVisible] = useState(false)
   const isPassword = type === 'password'
+  const t = useCopy(COPY)
   return (
     <label className="block">
       <span className="text-sm text-ink">{label}</span>
@@ -86,7 +95,7 @@ export function AuthField({ label, hint, type = 'text', ...input }: FieldProps) 
             type="button"
             onClick={() => setVisible(v => !v)}
             className="text-ink-muted hover:text-ink"
-            aria-label={visible ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
+            aria-label={visible ? t.hide : t.show}
           >
             {visible ? <EyeOff className="size-4" aria-hidden /> : <Eye className="size-4" aria-hidden />}
           </button>
