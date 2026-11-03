@@ -1,3 +1,4 @@
+import { ADMIN_HOME } from '@/lib/routes'
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -26,4 +27,4 @@ export async function accessToken(): Promise<string | null> {
 
 /** Tujuan setelah login: hanya path internal, agar tidak bisa dipakai untuk redirect ke situs lain. */
 export const safeNext = (next: string | null | undefined) =>
-  next && next.startsWith('/') && !next.startsWith('//') ? next : '/'
+  next && next.startsWith('/') && !next.startsWith('//') ? next : ADMIN_HOME

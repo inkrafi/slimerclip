@@ -29,6 +29,7 @@ import reviews
 import telemetry
 import longform
 import longform_thumb
+import motion_projects
 import topics
 import transcript_service
 import niche
@@ -110,6 +111,10 @@ ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 # Endpoint tanpa login (klip dilindungi token di URL-nya)
 PUBLIC_ENDPOINTS = {"health_check", "serve_clip", "serve_clips_zip", "serve_longform", "serve_asset", "serve_sfx", "serve_music",
                     "review_public", "review_decision", "review_publish", "report_public", "static"}
+
+# SlimerClip kini layanan jasa: hanya admin yang boleh memakai API. Akun non-admin ditolak di _guard
+# walau tokennya sah. ADMIN_ONLY=0 membuka kembali alur pengguna biasa (kuota, API key sendiri) yang tetap ada di kode.
+ADMIN_ONLY = os.getenv("ADMIN_ONLY", "1").strip() != "0"
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ALLOWED_RESOLUTIONS = {"720", "1080", "2160"}  # sisi pendek video 9:16; 2160 = 4K
@@ -491,7 +496,8 @@ def _guard():
     - Mode lokal: Host selain localhost ditolak → mencegah DNS rebinding dari website lain.
     - Origin asing → mencegah website lain mengirim request (mis. form upload
       multipart, yang tidak melewati preflight CORS) ke backend ini.
-    - Mode login: semua endpoint (kecuali health check & file klip bertoken) butuh token Supabase.
+    - Mode login: semua endpoint (kecuali health check & file klip bertoken) butuh token Supabase,
+      dan token itu harus milik admin (lihat ADMIN_ONLY).
     """
     if not AUTH_ENABLED:
         host = (request.host or "").rsplit(":", 1)[0].lower()
@@ -502,8 +508,11 @@ def _guard():
         abort(403)
     if request.method == "OPTIONS" or request.endpoint in PUBLIC_ENDPOINTS:
         return None
-    if current_user() is None:
+    user = current_user()
+    if user is None:
         return jsonify({"error": "Silakan masuk dulu untuk melanjutkan.", "code": "auth_required"}), 401
+    if ADMIN_ONLY and not user.is_admin:
+        return jsonify({"error": "Akun ini tidak punya akses admin.", "code": "admin_required"}), 403
     return None
 
 
@@ -1755,6 +1764,60 @@ def client_presets_delete(preset_id):
             json.dump(items, f, ensure_ascii=False)
         os.replace(path + ".tmp", path)
     return jsonify({"message": "Preset klien dihapus."})
+
+
+# ── Proyek motion video (pencatatan) ─────────────────────────
+
+def _motion_path(user: User) -> str:
+    return os.path.join(_owner_root(TEMPLATES_ROOT, user), "motion_projects.json")
+
+
+@app.route("/motion-projects", methods=["GET"])
+def motion_projects_list():
+    user = _user()
+    _require_admin(user)
+    return jsonify({"projects": motion_projects.load(_motion_path(user))})
+
+
+@app.route("/motion-projects", methods=["POST"])
+def motion_projects_create():
+    user = _user()
+    _require_admin(user)
+    with _templates_lock:
+        try:
+            project = motion_projects.create(_motion_path(user), request.get_json(silent=True) or {})
+        except motion_projects.ProjectError as e:
+            raise ApiError(400, str(e))
+    return jsonify({"project": project}), 201
+
+
+@app.route("/motion-projects/<project_id>", methods=["PUT"])
+def motion_projects_update(project_id):
+    user = _user()
+    _require_admin(user)
+    if not motion_projects.ID_RE.match(project_id):
+        raise ApiError(400, "Proyek tidak valid.")
+    with _templates_lock:
+        try:
+            project = motion_projects.update(_motion_path(user), project_id, request.get_json(silent=True) or {})
+        except motion_projects.ProjectError as e:
+            raise ApiError(400, str(e))
+    if project is None:
+        raise ApiError(404, "Proyek tidak ditemukan.")
+    return jsonify({"project": project})
+
+
+@app.route("/motion-projects/<project_id>", methods=["DELETE"])
+def motion_projects_delete(project_id):
+    user = _user()
+    _require_admin(user)
+    if not motion_projects.ID_RE.match(project_id):
+        raise ApiError(400, "Proyek tidak valid.")
+    with _templates_lock:
+        found = motion_projects.delete(_motion_path(user), project_id)
+    if not found:
+        raise ApiError(404, "Proyek tidak ditemukan.")
+    return jsonify({"message": "Proyek dihapus."})
 
 
 @app.route("/videos/<video_id>/render-all", methods=["POST"])

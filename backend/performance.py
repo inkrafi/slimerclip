@@ -167,13 +167,13 @@ def refresh(owner_root: str, links: list, force: bool = False, on_snapshot=None)
             continue
         record.pop("error", None)
         record.update({k: stats.get(k) for k in ("title", "channel", "channel_id", "published") if stats.get(k)})
-        snap = {"at": round(now), "views": stats["views"], "likes": stats.get("likes"), "comments": stats.get("comments")}
+        snap = {"at": int(now), "views": stats["views"], "likes": stats.get("likes"), "comments": stats.get("comments")}
         record["snapshots"].append(snap)
         del record["snapshots"][:-MAX_SNAPSHOTS]
         if stats.get("channel_id") and stats.get("subscribers"):
             channel = data["channels"].setdefault(stats["channel_id"], {"name": stats.get("channel"), "snapshots": []})
             channel["name"] = stats.get("channel") or channel.get("name")
-            channel["snapshots"].append({"at": round(now), "subscribers": int(stats["subscribers"])})
+            channel["snapshots"].append({"at": int(now), "subscribers": int(stats["subscribers"])})
             del channel["snapshots"][:-MAX_SNAPSHOTS * 4]
         updated += 1
         if on_snapshot:

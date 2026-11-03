@@ -358,6 +358,326 @@
   .fill-bar { transform: none; transition: none; }
 }
 
+/* Storyboard motion video: empat adegan bergantian dalam 12 detik */
+@keyframes scene-cycle {
+  0% { opacity: 0; transform: translateY(6px); }
+  3%, 22% { opacity: 1; transform: none; }
+  25%, 100% { opacity: 0; }
+}
+@keyframes story-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+.scene { opacity: 0; animation: scene-cycle 12s linear infinite; }
+.scene:nth-child(2) { animation-delay: 3s; }
+.scene:nth-child(3) { animation-delay: 6s; }
+.scene:nth-child(4) { animation-delay: 9s; }
+.story-progress { animation: story-progress 12s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .scene, .story-progress { animation: none; }
+  .scene:first-child { opacity: 1; }
+  .story-progress { transform: scaleX(0.25); }
+}
+
+/* ── Halaman jasa ─────────────────────────────────────────
+   Tiap section punya lampu gel sendiri di atas latar gelap. Pink tetap khusus tombol utama. */
+.band {
+  position: relative;
+  overflow: clip;
+  padding-block: clamp(4.5rem, 9vw, 8rem);
+}
+.band-hero { padding-block: clamp(3.5rem, 7vw, 6.5rem) clamp(4rem, 8vw, 7rem); }
+/* Warna tiap section adalah lapisan tipis yang memudar di atas dan bawah,
+   jadi section menyatu ke lingkungan yang sama dalam urutan apa pun. */
+.band::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--band-tint);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16%, #000 84%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 16%, #000 84%, transparent);
+}
+.band-indigo { --band-tint: rgb(86 72 190 / 0.2); }
+.band-noir { --band-tint: rgb(12 10 40 / 0.5); }
+.band-violet { --band-tint: rgb(120 76 205 / 0.2); }
+.band-plum { --band-tint: rgb(146 64 170 / 0.2); }
+.band-teal { --band-tint: rgb(70 88 205 / 0.22); }
+.band-ink { --band-tint: rgb(16 14 48 / 0.42); }
+.band-magenta { --band-tint: linear-gradient(to bottom, rgb(120 60 170 / 0.25), rgb(160 52 150 / 0.6) 55%, rgb(120 60 170 / 0.25)); }
+
+/* Satu lingkungan di belakang seluruh halaman jasa: pendaran pelan dan butiran halus */
+.env-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: #1a1742;
+}
+.env-layer::before {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(40% 34% at 78% 18%, rgb(150 88 215 / 0.34), transparent 70%),
+    radial-gradient(38% 36% at 16% 62%, rgb(82 84 215 / 0.34), transparent 70%),
+    radial-gradient(30% 26% at 62% 92%, rgb(170 72 170 / 0.22), transparent 70%);
+  animation: env-drift 72s ease-in-out infinite alternate;
+}
+.env-layer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.09;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+@keyframes env-drift {
+  from { transform: translate3d(-3%, -2%, 0) scale(1); }
+  to { transform: translate3d(4%, 3%, 0) scale(1.1); }
+}
+.text-glow { text-shadow: 0 0 44px rgb(211 179 255 / 0.28); }
+
+/* Garis progres halaman di bawah header */
+.page-progress { display: none; }
+@supports (animation-timeline: scroll()) {
+  @keyframes page-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  .page-progress {
+    display: block;
+    position: absolute;
+    inset: auto 0 -1px;
+    height: 2px;
+    transform-origin: left;
+    background: linear-gradient(90deg, rgb(211 179 255 / 0.5), var(--color-signal));
+    animation: page-progress linear both;
+    animation-timeline: scroll(root);
+  }
+}
+
+/* Hero yang digerakkan scroll: --p dari ScrubDriver. Sekitar dua layar scroll. */
+.scrub { display: none; --p: 0; height: 300vh; position: relative; }
+.hero-static { display: block; }
+@media (min-width: 768px) and (min-height: 560px) and (prefers-reduced-motion: no-preference) {
+  .scrub { display: block; }
+  .hero-static { display: none; }
+}
+.scrub-stage { position: sticky; top: 0; height: 100vh; overflow: clip; }
+.scrub-band {
+  opacity: min(clamp(0, calc((var(--p) - var(--a)) / 0.025), 1), clamp(0, calc((var(--d) - var(--p)) / 0.025), 1));
+  transform: translateY(calc((1 - clamp(0, calc((var(--p) - var(--a)) / 0.04), 1)) * 20px));
+}
+.scrub-copy { position: absolute; left: 1.5rem; top: 52%; width: 44%; translate: 0 -50%; z-index: 2; }
+.scrub-line { font-size: clamp(1.9rem, min(3.5vw, 7vh), 3.2rem); }
+.scrub-title { font-size: clamp(2.2rem, min(4.2vw, 8vh), 4.4rem); }
+@keyframes hint-bob { 50% { transform: translateY(4px); } }
+.scrub-hint { opacity: calc(1 - clamp(0, calc(var(--p) / 0.08), 1)); }
+.scrub-hint svg { animation: hint-bob 1.8s ease-in-out infinite; }
+
+/* Area kanan selalu terisi: layar 16:9 yang menyempit jadi klip 9:16 */
+.scrub-visual {
+  position: absolute;
+  right: 1.5rem;
+  top: 56px;
+  bottom: 6vh;
+  width: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  container-type: inline-size;
+}
+.scrub-screen {
+  --crop: clamp(0, calc((var(--p) - 0.48) / 0.14), 1);
+  --dock: clamp(0, calc((var(--p) - 0.74) / 0.14), 1);
+  position: relative;
+  width: min(100cqw, 78vh);
+  aspect-ratio: 16 / 9;
+  z-index: 2;
+  transform:
+    translate(calc(var(--dock) * 33cqw), calc(var(--dock) * 12vh))
+    scale(calc(1 + var(--crop) * 0.42 - var(--dock) * 0.62));
+}
+.scrub-scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  clip-path: inset(0 calc(var(--crop) * 34.2%) round 14px);
+  opacity: calc(1 - clamp(0, calc((var(--p) - 0.64) / 0.02), 1));
+  box-shadow: 0 30px 80px -30px rgb(150 100 240 / 0.6);
+}
+.scrub-graph { opacity: calc(1 - clamp(0, calc((var(--p) - 0.46) / 0.05), 1)); }
+.scrub-bars {
+  --found: clamp(0, calc((var(--p) - 0.08) / 0.3), 1);
+  --rest: clamp(0, calc((var(--p) - 0.38) / 0.07), 1);
+  clip-path: inset(0 calc(100% - var(--found) * 66% - var(--rest) * 34%) 0 0);
+}
+.scrub-peak { background: var(--color-signal); opacity: calc(0.45 + clamp(0, calc((var(--p) - 0.36) / 0.04), 1) * 0.55); }
+.scrub-graph .relative { container-type: inline-size; }
+.scrub-playhead {
+  position: absolute;
+  top: -6px;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--color-ink);
+  box-shadow: 0 0 12px rgb(246 243 255 / 0.8);
+  transform: translateX(calc(clamp(0, calc((var(--p) - 0.08) / 0.3), 1) * 64.5cqw));
+}
+.scrub-clip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  aspect-ratio: 9 / 16;
+  transform: translateX(-50%);
+  opacity: clamp(0, calc((var(--p) - 0.6) / 0.04), 1);
+}
+.scrub-board {
+  --show: clamp(0, calc((var(--p) - 0.76) / 0.09), 1);
+  position: absolute;
+  left: 0;
+  width: 80cqw;
+  opacity: var(--show);
+  transform: translate(calc((1 - var(--show)) * 36px), -6vh) scale(calc(0.95 + var(--show) * 0.05));
+}
+
+/* Garis gelombang pemisah */
+.wave-divider path { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 1800ms cubic-bezier(0.3, 0.7, 0.2, 1); }
+.wave-divider.is-in path { stroke-dashoffset: 0; }
+.wave-divider.reveal { transform: none; }
+
+/* Slider tonton ulang */
+.replay-range { accent-color: var(--color-signal); }
+
+/* Pendaran yang bergerak pelan */
+@keyframes gel-float {
+  from { transform: translate3d(-4%, -3%, 0) scale(1); }
+  to { transform: translate3d(5%, 4%, 0) scale(1.12); }
+}
+.gel {
+  position: absolute;
+  width: 34rem;
+  height: 34rem;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: gel-float 16s ease-in-out infinite alternate;
+}
+.gel-a { top: 0; right: -8rem; background: radial-gradient(circle, rgb(170 96 220 / 0.26), transparent 68%); }
+.gel-b { bottom: 0; left: -8rem; background: radial-gradient(circle, rgb(108 100 230 / 0.26), transparent 68%); animation-delay: -6s; }
+
+/* Pita berjalan */
+.ticker-track { animation: drift 48s linear infinite; }
+.ticker:hover .ticker-track { animation-play-state: paused; }
+
+/* Tombol utama: kilau menyapu saat hover, panah bergeser */
+.cta-lux { position: relative; overflow: hidden; box-shadow: 0 14px 40px -14px rgb(255 95 162 / 0.7); }
+.cta-lux::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 35%, rgb(255 255 255 / 0.45) 50%, transparent 65%);
+  transform: translateX(-120%);
+  transition: transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.cta-arrow { transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.btn:hover .cta-arrow { transform: translateX(4px); }
+.cta-lux, .cta-quiet { transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 120ms ease; }
+@media (hover: hover) {
+  .cta-lux:hover::after { transform: translateX(120%); }
+  .cta-lux:hover, .cta-quiet:hover { transform: translateY(-2px); }
+}
+
+/* Tautan footer: garis tumbuh dari kiri */
+.link-slide { position: relative; width: fit-content; }
+.link-slide::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0.6rem;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 260ms ease;
+}
+.link-slide:hover::after { transform: scaleX(1); }
+
+/* Panel layanan: lampu menyala dari sudut saat hover */
+.service-panel { background: rgb(255 255 255 / 0.035); }
+.service-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 500ms ease;
+}
+.panel-pink::before { background: radial-gradient(36rem 24rem at 100% 0%, rgb(190 90 200 / 0.3), transparent 70%); }
+.panel-teal::before { background: radial-gradient(36rem 24rem at 100% 0%, rgb(108 110 240 / 0.32), transparent 70%); }
+.service-number { transition: transform 600ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.service-panel, .plan-card, .bento-card { transition: transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+@media (hover: hover) {
+  .service-panel:hover { transform: translateY(-6px); }
+  .service-panel:hover::before { opacity: 1; }
+  .service-panel:hover .service-number { transform: translate3d(-10px, 8px, 0) scale(1.1); }
+  .plan-card:hover, .bento-card:hover { transform: translateY(-6px); }
+}
+
+/* Kartu paket & bento */
+.plan-card, .bento-card { background: rgb(255 255 255 / 0.05); }
+.plan-featured { background: linear-gradient(170deg, rgb(255 95 162 / 0.2), rgb(255 255 255 / 0.04) 60%); }
+
+/* Kartu video */
+.work-video { transition: transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.work-shade { background: linear-gradient(to top, rgb(0 0 0 / 0.45), transparent 45%); transition: opacity 300ms ease; }
+.work-play { transform: translate(-50%, -50%); transition: transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 300ms ease; }
+.work-frame { outline-offset: 3px; }
+@media (hover: hover) {
+  .work-frame:hover .work-video, .work-frame:focus-visible .work-video { transform: scale(1.05); }
+  .work-frame:hover .work-shade, .work-frame:focus-visible .work-shade { opacity: 0; }
+  .work-frame:hover .work-play, .work-frame:focus-visible .work-play { transform: translate(-50%, -50%) scale(0.7); opacity: 0; }
+}
+dialog video { display: block; }
+
+/* Kipas klip di hero clipping: membuka saat hover */
+.clip-fan > div { transition: transform 600ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.clip-fan-left { transform: rotate(-9deg); }
+.clip-fan-right { transform: rotate(9deg); }
+.clip-fan-front { z-index: 1; }
+@media (hover: hover) {
+  .clip-fan:hover .clip-fan-left { transform: translateX(-16px) rotate(-14deg); }
+  .clip-fan:hover .clip-fan-right { transform: translateX(16px) rotate(14deg); }
+  .clip-fan:hover .clip-fan-front { transform: translate(-50%, -10px) scale(1.03); }
+}
+
+/* Lapisan hero bergerak saat di-scroll, di browser yang mendukung */
+@supports (animation-timeline: view()) {
+  @keyframes drift-up { to { transform: translateY(-48px); } }
+  @keyframes drift-down { to { transform: translateY(28px); } }
+  @keyframes settle { from { transform: scale(0.93); } to { transform: none; } }
+  .hero-layer-a { animation: drift-down linear both; animation-timeline: scroll(root); animation-range: 0 700px; }
+  .hero-layer-b { animation: drift-up linear both; animation-timeline: scroll(root); animation-range: 0 700px; }
+  .scale-on-scroll { animation: settle linear both; animation-timeline: view(); animation-range: entry 0% cover 40%; }
+}
+
+/* Garis langkah yang terisi saat muncul */
+.step-line { height: 2px; overflow: hidden; background: rgb(255 255 255 / 0.14); }
+.step-line .fill-bar { display: block; height: 100%; background: var(--color-label-iris); }
+
+/* FAQ */
+.faq-icon { transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+@keyframes faq-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.faq-item[open] > p { animation: faq-in 280ms ease both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .gel, .ticker-track, .faq-item[open] > p, .env-layer::before, .scrub-hint svg { animation: none; }
+  .page-progress { display: none; }
+  .wave-divider path { stroke-dashoffset: 0; transition: none; }
+  .hero-layer-a, .hero-layer-b, .scale-on-scroll { animation: none; }
+  .cta-lux::after { display: none; }
+  .cta-arrow, .cta-lux, .cta-quiet, .service-panel, .plan-card, .bento-card, .service-number, .work-video, .work-play, .clip-fan > div, .faq-icon, .link-slide::after { transition: none; }
+}
+
 /* Laporan klien saat dicetak / disimpan sebagai PDF: tema gelap dibalik ke tinta gelap di kertas putih
    (browser umumnya tidak mencetak latar). Batang views tetap berwarna. */
 @media print {

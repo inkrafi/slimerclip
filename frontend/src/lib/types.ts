@@ -604,3 +604,25 @@ export interface EditTemplate {
   source_auto: boolean
   updated_at: number
 }
+
+// ── Proyek motion video ──
+export type MotionPackage = 'teaser' | 'launch' | 'kit' | 'custom'
+export type MotionStatus = 'konsultasi' | 'naskah' | 'animasi' | 'revisi' | 'selesai' | 'batal'
+
+export interface MotionProjectInput {
+  client: string
+  product: string
+  package: MotionPackage
+  status: MotionStatus
+  /** YYYY-MM-DD, atau kosong */
+  deadline: string
+  price: string
+  drive_url: string
+  notes: string
+}
+
+export interface MotionProject extends MotionProjectInput {
+  id: string
+  created_at: number
+  updated_at: number
+}

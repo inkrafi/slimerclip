@@ -440,7 +440,7 @@ function AnalysisError({ message, code, videoId, youtubeUrl, me, onRetry, onUplo
       {!quota && (
         <div className="mt-6 flex gap-2">
           <button type="button" onClick={onRetry} className="btn btn-primary">Coba lagi</button>
-          <Link href="/" className="btn btn-quiet">Video lain</Link>
+          <Link href="/admin" className="btn btn-quiet">Video lain</Link>
         </div>
       )}
     </div>

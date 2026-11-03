@@ -83,6 +83,8 @@ def fake_result(duration=10):
 def env(tmp_path, monkeypatch):
     fake = FakeAccounts()
     monkeypatch.setattr(A, "accounts", fake)
+    # Alur pengguna biasa tetap diuji; penguncian admin-saja diuji terpisah di test_admin_only_*
+    monkeypatch.setattr(A, "ADMIN_ONLY", False)
     monkeypatch.setattr(A, "CLIPS_ROOT", str(tmp_path / "clips"))
     monkeypatch.setattr(A, "TEMPLATES_ROOT", str(tmp_path / "templates"))
     monkeypatch.setattr(A, "UPLOADS_DIR", str(tmp_path / "uploads"))
@@ -894,3 +896,42 @@ def test_performance_report_flow(env, monkeypatch):
     assert c.get(f"/report/{report['token']}?period=2026-13").json["report"]["period"] == public["period"]   # periode tidak valid → bulan ini
     events = [e["event"] for e in T.read(f"u_{uuid.uuid5(uuid.NAMESPACE_DNS, 'admin@example.com')}")]
     assert "clip_performance_snapshot" in events and events.count("report_viewed") == 1
+
+
+# ── Layanan admin-saja ───────────────────────────────────────
+
+def test_admin_only_blocks_non_admin_everywhere(env, monkeypatch):
+    monkeypatch.setattr(A, "ADMIN_ONLY", True)
+    c = env["client"]
+    for path in ("/me", "/videos", "/motion-projects"):
+        res = c.get(path, headers=token())
+        assert res.status_code == 403 and res.json["code"] == "admin_required"
+    # Tanpa token tetap 401, dan email admin lewat kata sandi bukan admin
+    assert c.get("/me").status_code == 401
+    assert c.get("/me", headers=token("admin@example.com", method="password")).status_code == 403
+    assert c.get("/me", headers=token("admin@example.com")).status_code == 200
+    # Endpoint publik tanpa login tetap terbuka
+    assert c.get("/").status_code == 200
+
+
+def test_motion_projects_flow(env, monkeypatch):
+    monkeypatch.setattr(A, "ADMIN_ONLY", True)
+    c, admin = env["client"], token("admin@example.com")
+    body = {"client": "  Acme  ", "product": "Acme CRM", "package": "launch", "status": "konsultasi",
+            "deadline": "2026-12-01", "price": "$1.190", "drive_url": "https://drive.google.com/x", "notes": "Catatan"}
+    created = c.post("/motion-projects", headers=admin, json=body)
+    assert created.status_code == 201 and created.json["project"]["client"] == "Acme"
+    pid = created.json["project"]["id"]
+
+    for bad in ({"client": ""}, {"package": "lain"}, {"status": "lain"}, {"deadline": "2026-13-40"},
+                {"drive_url": "javascript:alert(1)"}):
+        assert c.post("/motion-projects", headers=admin, json={**body, **bad}).status_code == 400
+
+    updated = c.put(f"/motion-projects/{pid}", headers=admin, json={**body, "status": "animasi"})
+    assert updated.status_code == 200 and updated.json["project"]["status"] == "animasi"
+    assert c.get("/motion-projects", headers=admin).json["projects"][0]["status"] == "animasi"
+    assert c.put("/motion-projects/000000000000", headers=admin, json=body).status_code == 404
+
+    assert c.delete(f"/motion-projects/{pid}", headers=admin).status_code == 200
+    assert c.get("/motion-projects", headers=admin).json["projects"] == []
+    assert c.delete(f"/motion-projects/{pid}", headers=admin).status_code == 404

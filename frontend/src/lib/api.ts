@@ -1,3 +1,4 @@
+import type { MotionProject, MotionProjectInput } from '@/lib/types'
 import {
   AnalysisResult, ClientPreset, PerformanceClient, PerformanceReport, PublicReview, ReviewDecision, ReviewLink, ReviewPublishLink, ReviewSummary, ClipGenerateOptions, ClipProfile, ClipProfileOptions, ClipThumbnail, EditRecipe, EditTemplate, EditorAsset, EditorData, LongformBrand, LongformData, LongformProject, Me, TopicIdea, TopicProjectSummary, NicheSetting, RenderJob, StockVisual, RenderOptions, RenderedClip, Segment,
   TranscriptSegment, UploadedFileInfo, VideoDetail, VideoSummary,
@@ -15,6 +16,8 @@ export class ApiError extends Error {
 
 /** Event browser saat backend menolak sesi login (token kedaluwarsa/dicabut). */
 export const AUTH_EXPIRED_EVENT = 'slimerclip:auth-expired'
+/** Token sah tetapi bukan admin: layanan ini hanya untuk admin */
+export const ADMIN_REQUIRED_EVENT = 'slimerclip:admin-required'
 
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await accessToken()
@@ -34,6 +37,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const body = data as { error?: string; code?: string } | null
     if (response.status === 401 && body?.code === 'auth_required') window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+    if (response.status === 403 && body?.code === 'admin_required') window.dispatchEvent(new Event(ADMIN_REQUIRED_EVENT))
     throw new ApiError(body?.error || `Backend membalas error ${response.status}.`, response.status, body?.code)
   }
   return data as T
@@ -388,3 +392,20 @@ export async function uploadVideo(file: File, videoId: string, onProgress?: (per
     xhr.send(formData)
   })
 }
+
+// ── Proyek motion video ──
+const motionBody = (body: MotionProjectInput) => ({
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+export const getMotionProjects = () => request<{ projects: MotionProject[] }>('/motion-projects').then(r => r.projects)
+
+export const createMotionProject = (body: MotionProjectInput) =>
+  request<{ project: MotionProject }>('/motion-projects', { method: 'POST', ...motionBody(body) }).then(r => r.project)
+
+export const updateMotionProject = (id: string, body: MotionProjectInput) =>
+  request<{ project: MotionProject }>(`/motion-projects/${encodeURIComponent(id)}`, { method: 'PUT', ...motionBody(body) }).then(r => r.project)
+
+export const deleteMotionProject = (id: string) =>
+  request<{ message: string }>(`/motion-projects/${encodeURIComponent(id)}`, { method: 'DELETE' })

@@ -46,7 +46,7 @@ export default function HistoryPanel() {
           <div className="rounded-lg border border-dashed border-rule px-6 py-14 text-center">
             <p className="text-ink">Belum ada video yang dianalisis.</p>
             <p className="mt-1 text-sm text-ink-muted">
-              <Link href="/" className="underline underline-offset-4">Tempel link YouTube</Link> untuk memulai.
+              <Link href="/admin" className="underline underline-offset-4">Tempel link YouTube</Link> untuk memulai.
             </p>
           </div>
         ) : (

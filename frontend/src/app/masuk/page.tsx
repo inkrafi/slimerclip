@@ -1,96 +1,66 @@
 'use client'
 
-import { useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Loader2 } from 'lucide-react'
-import AuthRoute, { emailRedirect } from '@/components/auth/AuthRoute'
-import AuthShell, { AuthField, AuthLink } from '@/components/auth/AuthShell'
+import { useAuth } from '@/components/AuthProvider'
+import GoogleMark from '@/components/GoogleMark'
 import { authErrorMessage } from '@/lib/auth-errors'
-import { supabase } from '@/lib/supabase'
-import { useCopy, useLocale } from '@/components/LocaleProvider'
-
-const COPY = {
-  id: {
-    titleVideo: 'Masuk dulu, momennya kita cari setelah ini.', title: 'Masuk ke SlimerClip',
-    intro: 'Riwayat dan klip hasil render tersimpan di akunmu, jadi bisa dibuka lagi dari perangkat mana pun.',
-    noAccount: 'Belum punya akun?', signUp: 'Daftar gratis', password: 'Kata sandi', forgot: 'Lupa kata sandi?',
-    resend: 'Kirim ulang email konfirmasi', resent: (e: string) => `Email konfirmasi dikirim ulang ke ${e}.`, submit: 'Masuk',
-  },
-  en: {
-    titleVideo: "Sign in first, then we'll find the moments.", title: 'Sign in to SlimerClip',
-    intro: 'Your history and rendered clips are saved to your account, so you can open them from any device.',
-    noAccount: "Don't have an account?", signUp: 'Sign up free', password: 'Password', forgot: 'Forgot password?',
-    resend: 'Resend confirmation email', resent: (e: string) => `Confirmation email sent again to ${e}.`, submit: 'Sign in',
-  },
-}
+import { safeNext } from '@/lib/supabase'
 
 export default function SignInPage() {
-  return <AuthRoute>{next => <SignIn next={next} />}</AuthRoute>
+  return (
+    <Suspense fallback={null}>
+      <SignIn />
+    </Suspense>
+  )
 }
 
-function SignIn({ next }: { next: string }) {
+/** Login admin: hanya lewat Google, karena backend hanya mengakui admin dari sesi Google. Tidak ditautkan dari mana pun. */
+function SignIn() {
+  const params = useSearchParams()
+  const next = safeNext(params.get('next'))
+  const denied = params.get('ditolak') === '1'
   const router = useRouter()
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const { enabled, ready, session, signInWithGoogle } = useAuth()
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<{ message: string; unconfirmed: boolean } | null>(null)
-  const [resent, setResent] = useState(false)
-  const { locale } = useLocale()
-  const t = useCopy(COPY)
+  const [error, setError] = useState<string | null>(null)
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!supabase) return
+  useEffect(() => {
+    if (ready && session) router.replace(next)
+  }, [ready, session, next, router])
+
+  const google = async () => {
     setBusy(true)
     setError(null)
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
-    if (signInError) {
-      setError({ message: authErrorMessage(signInError, locale), unconfirmed: signInError.code === 'email_not_confirmed' })
+    try {
+      await signInWithGoogle(next)  // browser berpindah ke halaman Google
+    } catch (e) {
+      setError(authErrorMessage(e, 'id'))
       setBusy(false)
-      return
     }
-    router.replace(next)
-  }
-
-  const resend = async () => {
-    if (!supabase) return
-    const { error: resendError } = await supabase.auth.resend({
-      type: 'signup', email: email.trim(), options: { emailRedirectTo: emailRedirect(next) },
-    })
-    if (resendError) setError({ message: authErrorMessage(resendError, locale), unconfirmed: true })
-    else setResent(true)
   }
 
   return (
-    <AuthShell
-      title={next.startsWith('/video/') ? t.titleVideo : t.title}
-      intro={t.intro}
-      googleNext={next}
-      footer={<>{t.noAccount} <AuthLink href={`/daftar?next=${encodeURIComponent(next)}`}>{t.signUp}</AuthLink></>}
-    >
-      <form onSubmit={submit} className="space-y-4">
-        <AuthField label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" required />
-        <div>
-          <AuthField label={t.password} type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" required />
-          <Link href={`/lupa-sandi?next=${encodeURIComponent(next)}`} className="mt-1.5 inline-block text-xs text-ink-muted underline underline-offset-4 decoration-rule hover:text-ink">
-            {t.forgot}
-          </Link>
-        </div>
-        {error && (
-          <div role="alert" className="text-sm text-tally">
-            {error.message}
-            {error.unconfirmed && !resent && (
-              <button type="button" onClick={resend} className="ml-1 text-ink underline underline-offset-4">{t.resend}</button>
-            )}
-            {resent && <span className="block text-sage">{t.resent(email.trim())}</span>}
-          </div>
-        )}
-        <button type="submit" disabled={busy} className="btn btn-primary h-11 w-full">
-          {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
-          {t.submit}
-        </button>
-      </form>
-    </AuthShell>
+    <div className="mx-auto mt-16 max-w-sm rounded-lg border border-rule glass p-6">
+      <h1 className="type-heading text-2xl text-ink">Masuk admin</h1>
+      {enabled ? (
+        <>
+          <p className="mt-2 text-sm text-ink-muted">Pakai akun Google yang terdaftar sebagai admin.</p>
+          <button type="button" onClick={google} disabled={busy} className="mt-6 btn h-11 w-full bg-white text-[#1f1f1f] hover:bg-white/90 font-semibold">
+            {busy ? <Loader2 className="size-5 animate-spin" aria-hidden /> : <GoogleMark />}
+            Lanjutkan dengan Google
+          </button>
+          {denied && !error && <p role="alert" className="mt-3 text-sm text-tally">Akun tadi tidak punya akses admin. Coba masuk dengan akun Google lain.</p>}
+          {error && <p role="alert" className="mt-3 text-sm text-tally">{error}</p>}
+        </>
+      ) : (
+        <>
+          <p className="mt-2 text-sm text-ink-muted">Aplikasi berjalan dalam mode lokal, jadi semua fitur bisa dipakai tanpa masuk.</p>
+          <Link href={next} className="mt-6 btn btn-primary">Lanjutkan</Link>
+        </>
+      )}
+    </div>
   )
 }

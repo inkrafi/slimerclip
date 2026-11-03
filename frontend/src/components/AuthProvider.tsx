@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { AUTH_EXPIRED_EVENT, getMe } from '@/lib/api'
+import { ADMIN_REQUIRED_EVENT, AUTH_EXPIRED_EVENT, getMe } from '@/lib/api'
 import { AUTH_ENABLED, safeNext, supabase } from '@/lib/supabase'
 import { Me } from '@/lib/types'
 
@@ -60,7 +60,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMe(null)
   }, [])
 
-  // Backend menolak token (dicabut/kedaluwarsa) → keluar, halaman yang butuh login mengarahkan ke /masuk
+  // Akun Google yang bukan admin: langsung keluar dan beri tahu di halaman masuk
+  useEffect(() => {
+    if (!AUTH_ENABLED) return
+    const onDenied = () => { signOut().finally(() => window.location.replace('/masuk?ditolak=1')) }
+    window.addEventListener(ADMIN_REQUIRED_EVENT, onDenied)
+    return () => window.removeEventListener(ADMIN_REQUIRED_EVENT, onDenied)
+  }, [signOut])
+
+  // Backend menolak token (dicabut/kedaluwarsa) → keluar, halaman admin kembali ke halaman jasa
   useEffect(() => {
     if (!AUTH_ENABLED) return
     const onExpired = () => { signOut() }

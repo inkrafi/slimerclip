@@ -8,33 +8,34 @@ import { Menu, X } from 'lucide-react'
 import { Toaster } from 'sonner'
 import AccountMenu from '@/components/AccountMenu'
 import { useAuth } from '@/components/AuthProvider'
-import { LanguageSwitch, useCopy } from '@/components/LocaleProvider'
+import { useCopy } from '@/components/LocaleProvider'
 import RenderIndicator from '@/components/RenderIndicator'
 import { syne } from '@/lib/fonts'
+import { ADMIN_HOME, hasContactBand, isAuthPath, isClientPath, isPublicPath } from '@/lib/routes'
 
 const isLongform = (p: string) => p.startsWith('/longform') || /^\/video\/[^/]+\/longform/.test(p)
 
-const NAV = [
-  { href: '/', key: 'workspace', match: (p: string) => p === '/' || (p.startsWith('/video') && !isLongform(p)), wide: true, admin: false },
-  { href: '/jasa', key: 'service', match: (p: string) => p.startsWith('/jasa'), wide: true, admin: false },
-  { href: '/longform', key: 'longform', match: isLongform, wide: false, admin: true },
-  { href: '/laporan', key: 'reports', match: (p: string) => p.startsWith('/laporan'), wide: true, admin: true },
-  { href: '/riwayat', key: 'history', match: (p: string) => p.startsWith('/riwayat'), wide: false, admin: false },
-] as const
+/** Ruang kerja admin: semua fitur produksi. Selalu berbahasa Indonesia. */
+const ADMIN_NAV = [
+  { href: ADMIN_HOME, label: 'Ruang kerja', match: (p: string) => p === ADMIN_HOME || (p.startsWith('/video') && !isLongform(p)) },
+  { href: '/longform', label: 'Video panjang', match: isLongform },
+  { href: '/proyek-motion', label: 'Proyek motion', match: (p: string) => p.startsWith('/proyek-motion') },
+  { href: '/laporan', label: 'Laporan', match: (p: string) => p.startsWith('/laporan') },
+  { href: '/riwayat', label: 'Riwayat', match: (p: string) => p.startsWith('/riwayat') },
+]
 
 const COPY = {
-  id: { workspace: 'Ruang kerja', service: 'Jasa clipping', longform: 'Video panjang', reports: 'Laporan', history: 'Riwayat', home: 'SlimerClip, ke halaman awal', nav: 'Navigasi utama', openMenu: 'Buka menu', closeMenu: 'Tutup menu', signIn: 'Masuk' },
-  en: { workspace: 'Workspace', service: 'Clipping service', longform: 'Long videos', reports: 'Reports', history: 'History', home: 'SlimerClip, go to home', nav: 'Main navigation', openMenu: 'Open menu', closeMenu: 'Close menu', signIn: 'Sign in' },
+  id: { clipping: 'Jasa clipping', motion: 'Motion video', cta: 'Konsultasi gratis', home: 'SlimerClip, ke halaman awal', nav: 'Navigasi utama', openMenu: 'Buka menu', closeMenu: 'Tutup menu' },
+  en: { clipping: 'Podcast clipping', motion: 'Motion video', cta: 'Free consultation', home: 'SlimerClip, go to home', nav: 'Main navigation', openMenu: 'Open menu', closeMenu: 'Close menu' },
 }
 
 export default function SiteHeader() {
   const pathname = usePathname() || '/'
-  const { me, enabled, signedIn } = useAuth()
+  const { me } = useAuth()
   const t = useCopy(COPY)
-  // Halaman klien (review /r/..., laporan /lapor/...): tanpa menu aplikasi & akun, cukup logo dan pilihan bahasa
-  const clientView = pathname.startsWith('/r/') || pathname.startsWith('/lapor/')
-  const items = NAV.filter(item => !item.admin || me?.is_admin)
-  // Layar sempit: menu dilipat ke tombol (Esc menutup)
+  const isPublic = isPublicPath(pathname)
+  const bare = isClientPath(pathname) || isAuthPath(pathname)
+  const ctaHref = hasContactBand(pathname) ? '#konsultasi' : '/#konsultasi'
   const [menuOpen, setMenuOpen] = useState(false)
   useEffect(() => {
     if (!menuOpen) return
@@ -42,6 +43,15 @@ export default function SiteHeader() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [menuOpen])
+
+  const items = isPublic
+    ? [
+        { href: '/clipping', label: t.clipping, match: (p: string) => p === '/clipping' },
+        { href: '/motion', label: t.motion, match: (p: string) => p === '/motion' },
+        // Hanya terlihat oleh admin yang sudah login
+        ...(me?.is_admin ? [{ href: ADMIN_HOME, label: 'Ruang kerja', match: () => false }] : []),
+      ]
+    : ADMIN_NAV
 
   return (
     <>
@@ -54,65 +64,59 @@ export default function SiteHeader() {
       />
       <header className="print:hidden sticky top-0 z-40 border-b border-rule bg-bay/55 backdrop-blur-md">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-6">
-          <Link href="/" className="flex items-center gap-2.5 text-ink" aria-label={t.home}>
+          <Link href={isPublic || bare ? '/' : ADMIN_HOME} className="flex min-h-11 items-center gap-2.5 text-ink" aria-label={t.home}>
             <Image src="/logo-mark.png" alt="" width={32} height={32} priority className="size-8" />
             <span className={`${syne.className} text-xl leading-none tracking-[-0.02em]`}>SlimerClip</span>
           </Link>
-          {clientView ? <LanguageSwitch /> : (
-          <div className="flex items-center gap-2 sm:gap-3">
-          <RenderIndicator />
-          <nav aria-label={t.nav} className="flex items-center gap-1 text-sm">
-            {items.map(item => {
-              const active = item.match(pathname)
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  aria-current={active ? 'page' : undefined}
-                  className={`hidden sm:flex h-14 px-3 items-center border-b-2 -mb-px ${active ? 'border-signal text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}
-                >
-                  {t[item.key]}
-                </Link>
-              )
-            })}
-          </nav>
-          <LanguageSwitch className="hidden sm:block" />
-          <AccountMenu />
-          <span className="sm:hidden">
-          <span className="tip-wrap">
-            <button type="button" onClick={() => setMenuOpen(o => !o)} aria-expanded={menuOpen} aria-controls="mobile-menu"
-              aria-label={menuOpen ? t.closeMenu : t.openMenu} aria-describedby="menu-tip" className="icon-btn">
-              {menuOpen ? <X className="size-4" aria-hidden /> : <Menu className="size-4" aria-hidden />}
-            </button>
-            <span role="tooltip" id="menu-tip" className="tip" style={{ top: 'calc(100% + 0.5rem)', bottom: 'auto', left: 'auto', right: 0, transform: 'none' }}>{menuOpen ? t.closeMenu : t.openMenu}</span>
-          </span>
-          </span>
-          </div>
+          {!bare && (
+            <div className="flex items-center gap-2 sm:gap-3">
+              {!isPublic && <RenderIndicator />}
+              <nav aria-label={t.nav} className="flex items-center gap-1 text-sm">
+                {items.map(item => {
+                  const active = item.match(pathname)
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      aria-current={active ? 'page' : undefined}
+                      className={`hidden sm:flex h-14 px-3 items-center border-b-2 -mb-px ${active ? 'border-signal text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}
+                    >
+                      {item.label}
+                    </Link>
+                  )
+                })}
+              </nav>
+              {isPublic
+                ? <a href={ctaHref} className="btn btn-sm btn-primary hidden h-9 sm:inline-flex">{t.cta}</a>
+                : <AccountMenu />}
+              <span className="sm:hidden">
+                <span className="tip-wrap">
+                  <button type="button" onClick={() => setMenuOpen(o => !o)} aria-expanded={menuOpen} aria-controls="mobile-menu"
+                    aria-label={menuOpen ? t.closeMenu : t.openMenu} aria-describedby="menu-tip" className="icon-btn">
+                    {menuOpen ? <X className="size-4" aria-hidden /> : <Menu className="size-4" aria-hidden />}
+                  </button>
+                  <span role="tooltip" id="menu-tip" className="tip" style={{ top: 'calc(100% + 0.5rem)', bottom: 'auto', left: 'auto', right: 0, transform: 'none' }}>{menuOpen ? t.closeMenu : t.openMenu}</span>
+                </span>
+              </span>
+            </div>
           )}
         </div>
-        {menuOpen && !clientView && (
+        {menuOpen && !bare && (
           <nav id="mobile-menu" aria-label={t.nav} className="sm:hidden border-t border-rule bg-bay px-4 pb-4">
             <ul className="divide-y divide-rule">
               {items.map(item => (
                 <li key={item.href}>
                   <Link href={item.href} onClick={() => setMenuOpen(false)} aria-current={item.match(pathname) ? 'page' : undefined}
                     className={`flex h-12 items-center ${item.match(pathname) ? 'text-ink font-semibold' : 'text-ink-muted'}`}>
-                    {t[item.key]}
+                    {item.label}
                   </Link>
                 </li>
               ))}
-              {/* "Masuk" dilipat ke menu di layar sempit agar header tidak melebar */}
-              {enabled && !signedIn && (
-                <li>
-                  <Link href={`/masuk?next=${encodeURIComponent(pathname)}`} onClick={() => setMenuOpen(false)} className="flex h-12 items-center text-ink-muted">
-                    {t.signIn}
-                  </Link>
-                </li>
-              )}
             </ul>
-            <LanguageSwitch className="mt-2 tap" />
+            {isPublic && <a href={ctaHref} onClick={() => setMenuOpen(false)} className="btn btn-primary mt-3 h-11 w-full">{t.cta}</a>}
           </nav>
         )}
+        {isPublic && <span className="page-progress" aria-hidden />}
       </header>
     </>
   )

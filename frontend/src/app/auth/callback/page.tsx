@@ -39,10 +39,6 @@ function Callback() {
       <div className="pt-16 max-w-md">
         <h1 className="type-heading text-2xl text-ink">Login tidak berhasil</h1>
         <p role="alert" className="mt-2 text-ink-muted">{message}</p>
-        <p className="mt-2 text-sm text-ink-muted">
-          Jika ini link konfirmasi email yang dibuka di browser atau perangkat lain, akunmu kemungkinan sudah aktif.
-          Silakan masuk dengan email dan kata sandimu.
-        </p>
         <Link href={`/masuk?next=${encodeURIComponent(next)}`} className="mt-6 btn btn-primary">Masuk</Link>
       </div>
     )

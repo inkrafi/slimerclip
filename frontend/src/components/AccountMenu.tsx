@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 import { useAuth } from '@/components/AuthProvider'
 import { useCopy } from '@/components/LocaleProvider'
 import Avatar from '@/components/Avatar'
@@ -12,12 +12,12 @@ const COPY = {
   id: {
     admin: 'Admin, tanpa batas', ownKey: 'Analisis memakai API key milikmu',
     quota: (left: number, limit: number) => `${left} dari ${limit} analisis gratis tersisa`,
-    signIn: 'Masuk', tryFree: 'Coba gratis', account: (name: string) => `Akun ${name}`, settings: 'Pengaturan', signOut: 'Keluar',
+    account: (name: string) => `Akun ${name}`, settings: 'Pengaturan', signOut: 'Keluar',
   },
   en: {
     admin: 'Admin, unlimited', ownKey: 'Analysis uses your own API key',
     quota: (left: number, limit: number) => `${left} of ${limit} free analyses left`,
-    signIn: 'Sign in', tryFree: 'Try free', account: (name: string) => `Account ${name}`, settings: 'Settings', signOut: 'Sign out',
+    account: (name: string) => `Account ${name}`, settings: 'Settings', signOut: 'Sign out',
   },
 }
 
@@ -30,7 +30,6 @@ function quotaLine(me: Me, t: (typeof COPY)['id']) {
 
 export default function AccountMenu() {
   const { enabled, ready, session, me, signOut } = useAuth()
-  const pathname = usePathname() || '/'
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const t = useCopy(COPY)
@@ -52,16 +51,7 @@ export default function AccountMenu() {
 
   if (!enabled || !ready) return null
 
-  if (!session) {
-    const onAuthPage = ['/masuk', '/daftar', '/lupa-sandi', '/atur-sandi', '/auth'].some(p => pathname.startsWith(p))
-    const next = encodeURIComponent(pathname === '/' || onAuthPage ? '/riwayat' : pathname)
-    return (
-      <div className="flex items-center gap-1">
-        <Link href={`/masuk?next=${next}`} className="btn btn-sm text-ink-muted hover:text-ink hidden sm:inline-flex">{t.signIn}</Link>
-        <Link href={`/daftar?next=${next}`} className="btn btn-sm btn-primary">{t.tryFree}</Link>
-      </div>
-    )
-  }
+  if (!session) return null
 
   if (!me) return <span className="size-8 rounded-full bg-raised" aria-hidden />
 

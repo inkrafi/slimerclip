@@ -41,3 +41,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Video portofolio (terlalu besar untuk git, disalin langsung ke server)
+/public/portfolio/**/*.mp4
+/public/portfolio/**/*.jpg

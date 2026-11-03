@@ -322,7 +322,7 @@ function Hub() {
               </ul>
             )}
             <p className="mt-3 border-t border-rule pt-3 text-xs text-ink-faint">
-              Dari podcast? Buka video yang sudah dianalisis di <Link href="/" className="underline underline-offset-4">Ruang kerja</Link>,
+              Dari podcast? Buka video yang sudah dianalisis di <Link href="/admin" className="underline underline-offset-4">Ruang kerja</Link>,
               lalu pilih <span className="text-ink-muted">Jadikan video panjang</span>.
             </p>
           </section>

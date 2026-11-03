@@ -1,31 +1,45 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
-import { COUNTRY_HEADERS, isLocale, LOCALE_COOKIE, LOCALE_HEADER, localeForCountry, localeFromAcceptLanguage } from '@/lib/i18n'
+import { LOCALE_HEADER, localeForCountry } from '@/lib/i18n'
 import type { Locale } from '@/lib/i18n'
+import { isPublicPath, SURFACE_HEADER } from '@/lib/routes'
 
-const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\]|.*\.localhost|.*\.test)(:\d+)?$/
+/**
+ * Header negara yang dipercaya, dari satu lapisan di depan server (default Cloudflare).
+ * Hanya satu nama supaya pengunjung tidak bisa memilih harga dengan mengirim header lain.
+ */
+const COUNTRY_HEADER = (process.env.GEO_COUNTRY_HEADER || 'cf-ipcountry').toLowerCase()
 
-/** Bahasa pengunjung: pilihan manual (cookie) > negara dari IP (header hosting) > bahasa browser > default. */
+/** Alamat lama yang sudah tidak punya halaman */
+const REDIRECTS: Record<string, string> = {
+  '/jasa': '/clipping',
+  '/services': '/clipping',
+  '/daftar': '/',
+  '/lupa-sandi': '/',
+  '/atur-sandi': '/',
+}
+
+/** Bahasa & harga mengikuti negara dari IP saja. Negara tidak diketahui → Inggris/USD. */
 function pickLocale(request: NextRequest): Locale {
-  const manual = request.cookies.get(LOCALE_COOKIE)?.value
-  if (isLocale(manual)) return manual
-  for (const name of COUNTRY_HEADERS) {
-    const byCountry = localeForCountry(request.headers.get(name))
-    if (byCountry) return byCountry
-  }
-  // Tanpa info negara (mis. server sendiri tanpa CDN). Saat pengembangan lokal default bahasa Indonesia.
-  if (LOCAL_HOST.test(request.headers.get('host') || '')) return 'id'
-  return localeFromAcceptLanguage(request.headers.get('accept-language')) ?? 'en'
+  const country = process.env.NODE_ENV === 'production'
+    ? request.headers.get(COUNTRY_HEADER)
+    : process.env.GEO_DEV_COUNTRY || 'ID'   // pengembangan lokal tidak punya header negara
+  return localeForCountry(country) ?? 'en'
 }
 
 export function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl
+  const target = REDIRECTS[pathname]
+  if (target) return NextResponse.redirect(new URL(target, request.url), 308)
+
   const headers = new Headers(request.headers)
   headers.set(LOCALE_HEADER, pickLocale(request))
-  // Alamat berbahasa Inggris untuk halaman jasa
-  if (request.nextUrl.pathname === '/services') {
-    return NextResponse.rewrite(new URL('/jasa', request.url), { request: { headers } })
-  }
-  return NextResponse.next({ request: { headers } })
+  if (isPublicPath(pathname)) headers.set(SURFACE_HEADER, 'public')
+  else headers.delete(SURFACE_HEADER)
+  const response = NextResponse.next({ request: { headers } })
+  // Hanya halaman jasa yang boleh diindeks; login, admin, dan halaman klien tidak
+  if (!isPublicPath(pathname)) response.headers.set('X-Robots-Tag', 'noindex, nofollow')
+  return response
 }
 
 export const config = {
