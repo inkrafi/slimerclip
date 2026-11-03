@@ -345,6 +345,8 @@ class SpeakerLayoutPlanner:
         full_x, zoom_x, zoom_y, top_x, top_y, bot_x, bot_y = [], [], [], [], [], [], []
         zoom_spans, split_spans = [], []
         summary = {"full": 0.0, "zoom": 0.0, "split": 0.0, "shots": len(shots)}
+        # Pergantian bingkai (full ↔ zoom ↔ split) untuk desain suara: [detik relatif klip, dari, ke]
+        cuts, prev_frame = [], None
 
         for i_run, (r0, r1, kind, data) in enumerate(runs):
             # Run terakhir berlaku sampai klip habis (frame setelah sampel terakhir tidak boleh kosong)
@@ -353,6 +355,10 @@ class SpeakerLayoutPlanner:
             seconds = t_of(r1 + 1) - t_of(r0)   # durasi asli, untuk ringkasan
             if kind == "single" and data[2] < src_h * 0.10:
                 kind = "zoom"   # orang sendirian tapi kecil di frame → perbesar
+            frame = "full" if kind in ("center", "single") else kind
+            if prev_frame and frame != prev_frame:
+                cuts.append([round(span[0], 2), prev_frame, frame])
+            prev_frame = frame
             if kind in ("center", "single"):
                 cx = src_w / 2 if kind == "center" else data[0]
                 full_x.append((t_end, clamp(cx - full_w / 2, 0, src_w - full_w)))
@@ -409,6 +415,7 @@ class SpeakerLayoutPlanner:
 
         summary = {k: round(v, 1) if isinstance(v, float) else v for k, v in summary.items()}
         summary["mode"] = "speaker"
+        summary["cuts"] = cuts
         return ";".join(parts), summary
 
     def plan_gaming(self, video_path, start, end, callback=None) -> tuple:

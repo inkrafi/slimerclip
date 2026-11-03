@@ -20,7 +20,11 @@ link/upload ─▶ 1 metadata ─▶ 2 transkrip ─▶ 3 pilih momen (Gemini) �
 | 8 | **Render**: satu kali encode dari video sumber (`-ss` sebelum `-i`): crop/scale tata letak → unsharp bila upscale → vignette → caption ASS → hook → watermark/logo. Audio: suara asli selalu `dynaudnorm` (meratakan level antar pembicara) + `loudnorm` −14 LUFS, lalu dicampur musik/SFX bila ada (ducking musik) | `backend/render_pipeline.py` (`process_clip`), `backend/clip_effects.py` (`audio_graph`, hook, marks) | FFmpeg (libx264, AAC 192k) |
 | — | **Thumbnail klip** (opsional): frame dengan wajah paling jelas + teks hook | `backend/thumbnail.py` | OpenCV YuNet |
 
-**Edit otomatis** (`backend/auto_edit.py`): klip yang belum pernah diedit dibuka di editor (dan dirender lewat "render semua") dengan hook dari analisis, musik sesuai suasana momen (musik bawaan `backend/music/bgm_*.m4a` hasil `tools/make_music.py`, atau upload pengguna yang namanya mengandung kata suasana), efek suara (whoosh saat hook, boom sebelum `hook_line`, ding di angka; maks 4), penjernih suara (`highpass` + `afftdn` + EQ vokal), dan filter video HD (`hqdn3d` + `eq` + `unsharp`). Thumbnail dibuat otomatis saat editor pertama dibuka.
+**Edit otomatis** (`backend/auto_edit.py`): klip yang belum pernah diedit dibuka di editor (dan dirender lewat "render semua") dengan hook dari analisis, musik sesuai suasana momen (musik bawaan `backend/music/bgm_*.m4a` hasil `tools/make_music.py`, atau upload pengguna yang namanya mengandung kata suasana), desain suara otomatis (lihat di bawah), penjernih suara (`highpass` + `afftdn` + EQ vokal), dan filter video HD (`hqdn3d` + `eq` + `unsharp`). Thumbnail dibuat otomatis saat editor pertama dibuka.
+
+**Efek suara**: tidak ada yang dipasang otomatis (desain suara otomatis sudah dihapus). Edit otomatis hanya mengisi hook, musik (-19 dB), suara jernih & HD; efek suara dipasang manual di editor. Efek bertanda `track` di resep lama dibuang saat `sanitize_edit`.
+
+**Batalkan render**: `POST /jobs/<id>/cancel` menandai job; worker berhenti di sela tahap, saat antre, atau mematikan FFmpeg yang sedang encode (`_run_ffmpeg(cancelled=...)`). Job ditutup `status: "error"`, `cancelled: true`; klip lama tetap, jatah render tidak terpakai.
 
 **Subtitle terjemahan** (`backend/subtitle_translate.py`): profil `subtitle_language` ≠ bahasa ucapan → kalimat Whisper diterjemahkan Gemini (1 panggilan per klip), waktu kata dipetakan ke urutan kata asli, lalu disimpan di `*.words.json` (bisa diedit di editor).
 

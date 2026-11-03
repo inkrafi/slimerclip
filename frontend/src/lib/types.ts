@@ -327,6 +327,8 @@ export interface RenderJob {
   title: string
   status: 'queued' | 'downloading' | 'running' | 'done' | 'error'
   message: string | null
+  /** true setelah tombol "Hentikan render"; status akhirnya tetap "error" */
+  cancelled?: boolean
   created_at: number
   finished_at: number | null
   download: { status: string; progress: number }
@@ -505,6 +507,7 @@ export interface EditRecipe {
   vignette: { shape: VignetteShape; strength: number; height: number }
   marks: Record<MarkKind, WatermarkMark>
   music: { asset: string; volume: number; ducking: boolean }
+  /** Efek suara yang dipasang manual di editor */
   sfx: { asset: string; at: number; volume: number }[]
   hook: HookSettings
   /** Suara asli: volume (100 = normal) & penjernih suara */
@@ -579,7 +582,7 @@ export interface EditorData {
   templates: EditTemplate[]
   /** Resep edit otomatis untuk klip ini & ringkasannya */
   auto_edit: EditRecipe
-  auto_summary: { mood: string; music: string; music_is_user: boolean; sfx: number; hook: string }
+  auto_summary: { mood: string; music: string; music_is_user: boolean; hook: string }
   /** true = klip belum pernah diedit, jadi editor dibuka dengan edit otomatis */
   auto_applied: boolean
 }

@@ -34,9 +34,13 @@ def _video_args(preview: bool, width: int) -> list:
             "-fps_mode", "cfr", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
 
 
-def _ffmpeg_error(e: subprocess.CalledProcessError) -> str:
+class RenderCancelled(Exception):
+    """Render dihentikan pengguna (tombol Batalkan di editor)."""
+
+
+def _ffmpeg_error(stderr: bytes) -> str:
     """Ambil beberapa baris terakhir stderr FFmpeg (bagian awal hanya banner/info stream)."""
-    lines = [l.strip() for l in e.stderr.decode('utf-8', errors='ignore').splitlines() if l.strip()]
+    lines = [l.strip() for l in (stderr or b"").decode('utf-8', errors='ignore').splitlines() if l.strip()]
     return " | ".join(lines[-3:])
 
 
@@ -48,11 +52,20 @@ def _fonts_dir_for(cwd: str) -> str:
         return "'" + FONTS_DIR.replace("\\", "/").replace(":", r"\:") + "'"
 
 
-def _run_ffmpeg(cmd: list, error_prefix: str, cwd: str = None):
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
-    except subprocess.CalledProcessError as e:
-        raise Exception(f"{error_prefix}: {_ffmpeg_error(e)}")
+def _run_ffmpeg(cmd: list, error_prefix: str, cwd: str = None, cancelled=None):
+    """Jalankan FFmpeg; cancelled() bernilai True → proses dimatikan dan RenderCancelled dilempar."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    while True:
+        try:
+            _, stderr = proc.communicate(timeout=0.5)
+            break
+        except subprocess.TimeoutExpired:
+            if cancelled and cancelled():
+                proc.kill()
+                proc.communicate()
+                raise RenderCancelled()
+    if proc.returncode:
+        raise Exception(f"{error_prefix}: {_ffmpeg_error(stderr)}")
 
 
 def _even_int(v: float) -> int:
@@ -353,6 +366,16 @@ class RenderPipeline:
         """
         video_id = options.get('video_id', 'unknown')
         seg_num = segment.get('segment_number', 1)
+        # options['cancelled']: fungsi tanpa argumen dari app.py; diperiksa di setiap laporan progres & saat encode
+        cancelled = options.get('cancelled')
+        if cancelled:
+            report = callback
+
+            def callback(msg):
+                if msg.get('status') != 'done' and cancelled():
+                    raise RenderCancelled()
+                if report:
+                    report(msg)
 
         start_sec = self._time_to_seconds(segment.get('start_time', '00:00'))
         end_sec = self._time_to_seconds(segment.get('end_time', '00:00'))
@@ -521,7 +544,7 @@ class RenderPipeline:
                 "-c:a", "aac", "-b:a", "128k" if preview else "192k", "-ar", "48000",
                 "-movflags", "+faststart",  # metadata di depan → preview bisa langsung diputar
                 temp_output_path
-            ], "Gagal render klip final", cwd=output_dir)
+            ], "Gagal render klip final", cwd=output_dir, cancelled=cancelled)
 
             os.replace(temp_output_path, final_output_path)
         finally:

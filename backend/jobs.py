@@ -32,6 +32,7 @@ class JobManager:
             "title": title,
             "status": "queued",
             "message": None,
+            "cancelled": False,   # True setelah pengguna menekan Batalkan (status akhirnya "error")
             "created_at": time.time(),
             "finished_at": None,
             "download": {"status": "pending", "progress": 0},
@@ -75,6 +76,25 @@ class JobManager:
             job = self._jobs.get(job_id)
             if job and str(segment_number) in job["segments"]:
                 job["segments"][str(segment_number)].update(fields)
+
+    def cancel(self, job_id: str, owner: str) -> dict | None:
+        """
+        Minta job aktif berhenti. Worker memeriksa is_cancelled() di sela tahap render (dan saat FFmpeg berjalan),
+        lalu menutup job sebagai "error" dengan cancelled=True. None jika job tidak ada / bukan milik pengguna.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job["owner"] != owner:
+                return None
+            if job["status"] in ACTIVE_STATUSES:
+                job["cancelled"] = True
+                job["message"] = "Membatalkan…"
+            return copy.deepcopy(job)
+
+    def is_cancelled(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            return bool(job and job.get("cancelled"))
 
     def get(self, job_id: str, owner: str | None = None) -> dict | None:
         """Job berdasarkan ID; jika owner diisi, hanya job milik pengguna tersebut."""

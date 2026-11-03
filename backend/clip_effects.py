@@ -48,6 +48,36 @@ SFX_GROUPS = {
         ("lib_sparkle.wav", "Kilau"), ("lib_click.wav", "Klik"), ("lib_typing.wav", "Mengetik"), ("lib_beep.wav", "Bip sensor"),
     ],
     "Suasana": [("lib_thunder.wav", "Petir"), ("lib_wind.wav", "Angin")],
+    # Beberapa variasi per jenis, beda panjang & tempo
+    "Whoosh (gerakan)": [
+        ("lib_wh_deep_1.wav", "Deep voice 1"), ("lib_wh_deep_2.wav", "Deep voice 2"), ("lib_wh_deep_3.wav", "Deep voice 3"),
+        ("lib_wh_hollow_1.wav", "Hollow 1"), ("lib_wh_hollow_2.wav", "Hollow 2"), ("lib_wh_hollow_3.wav", "Hollow 3"),
+        ("lib_wh_futuristic_1.wav", "Futuristik 1"), ("lib_wh_futuristic_2.wav", "Futuristik 2"),
+        ("lib_wh_futuristic_3.wav", "Futuristik 3"), ("lib_wh_wind_1.wav", "Angin pelan 1"), ("lib_wh_wind_2.wav", "Angin pelan 2"),
+        ("lib_wh_long_1.wav", "Panjang (setengah riser) 1"), ("lib_wh_long_2.wav", "Panjang (setengah riser) 2"),
+        ("lib_wh_short_1.wav", "Pendek 1"), ("lib_wh_short_2.wav", "Pendek 2"), ("lib_wh_short_3.wav", "Pendek 3"),
+        ("lib_wh_classy.wav", "Classy airy (berat)"), ("lib_wh_synthetic.wav", "Transisi sintetis"),
+        ("lib_wh_spacey.wav", "Transisi spacey"), ("lib_wh_water_drop.wav", "Transisi tetes air"),
+    ],
+    "Tekstur (kejadian)": [
+        ("lib_tx_pop_1.wav", "Pop 1"), ("lib_tx_pop_2.wav", "Pop 2"), ("lib_tx_pop_3.wav", "Pop 3"),
+        ("lib_tx_ui_click_1.wav", "Klik UI 1"), ("lib_tx_ui_click_2.wav", "Klik UI 2"), ("lib_tx_ui_click_3.wav", "Klik UI 3"),
+        ("lib_tx_scifi_click_1.wav", "Klik sci-fi 1"), ("lib_tx_scifi_click_2.wav", "Klik sci-fi 2"),
+        ("lib_tx_scifi_click_3.wav", "Klik sci-fi 3"), ("lib_tx_gear_1.wav", "Roda gigi 1"), ("lib_tx_gear_2.wav", "Roda gigi 2"),
+        ("lib_tx_gear_3.wav", "Roda gigi 3"), ("lib_tx_video_scan.wav", "Pindai (roda gigi berputar)"),
+        ("lib_tx_mechanism.wav", "Mekanisme"), ("lib_tx_scifi_impact_1.wav", "Reveal sci-fi 1"),
+        ("lib_tx_scifi_impact_2.wav", "Reveal sci-fi 2"), ("lib_tx_scifi_impact_3.wav", "Reveal sci-fi 3"),
+        ("lib_tx_activate.wav", "Energi menyala"), ("lib_tx_camera_click.wav", "Klik kamera digital"),
+        ("lib_tx_choir.wav", "Paduan suara (reveal besar)"), ("lib_tx_success.wav", "Berhasil (kesimpulan)"),
+        ("lib_tx_alarm.wav", "Buzzer alarm (pelan)"),
+    ],
+    "Riser & hit": [
+        ("lib_rs_sharp_bass_1.wav", "Riser sharp bass 1,5 dtk"), ("lib_rs_sharp_bass_2.wav", "Riser sharp bass 2,5 dtk"),
+        ("lib_rs_sharp_bass_3.wav", "Riser sharp bass 3,5 dtk"), ("lib_rs_metallic_1.wav", "Riser metalik 1,5 dtk"),
+        ("lib_rs_metallic_2.wav", "Riser metalik 2,5 dtk"), ("lib_rs_metallic_3.wav", "Riser metalik 3,5 dtk"),
+        ("lib_rs_suck_back_1.wav", "Riser suck-back 1,8 dtk"), ("lib_rs_suck_back_2.wav", "Riser suck-back 2,8 dtk"),
+        ("lib_hit_1.wav", "Hit dalam"), ("lib_hit_2.wav", "Hit padat"), ("lib_hit_3.wav", "Hit metalik"),
+    ],
 }
 SFX_LIBRARY = {name: label for items in SFX_GROUPS.values() for name, label in items}
 SFX_GROUP_OF = {name: group for group, items in SFX_GROUPS.items() for name, _ in items}
@@ -203,7 +233,8 @@ def sanitize_edit(raw, default_start: float, default_end: float, video_duration:
 
     sfx = []
     for item in (raw.get("sfx") if isinstance(raw.get("sfx"), list) else [])[:MAX_SFX]:
-        if not isinstance(item, dict):
+        # Bertanda "track" = sisa desain suara otomatis (sudah dihapus): dibuang, efek tambahan manual tetap
+        if not isinstance(item, dict) or item.get("track"):
             continue
         asset = item.get("asset") if item.get("asset") in SFX_LIBRARY else _asset_name(item.get("asset"), "audio")
         at = _num(item.get("at"), None, 0, limit or 1e7)
@@ -680,6 +711,7 @@ SPEECH_NORM = "dynaudnorm=f=250:g=31:p=0.9:m=6:t=0.003,loudnorm=I=-14:TP=-1.5:LR
 # Penjernih suara: buang dengung <80 Hz, kurangi desis/noise latar, sedikit penekanan di frekuensi kejelasan vokal
 VOICE_CLEAN = "highpass=f=80,afftdn=nr=12:nf=-40:tn=1,equalizer=f=3200:t=q:w=1.2:g=2.5"
 # Video lebih jernih & "HD": kurangi noise ringan, kontras/warna sedikit naik, penajaman
+MIX_LIMIT = "alimiter=limit=0.95:level=0"
 VIDEO_ENHANCE = "hqdn3d=1.5:1.5:6:6,eq=contrast=1.05:saturation=1.1,unsharp=5:5:0.8:5:5:0"
 
 
@@ -732,5 +764,6 @@ def audio_graph(music: dict | None, music_index: int | None, sfx: list, duration
     if len(mix) == 1:
         parts.append(f"{mix[0]}anull[{dst}]")
     else:
-        parts.append(f"{''.join(mix)}amix=inputs={len(mix)}:duration=first:normalize=0[{dst}]")
+        # Tumpukan suara + musik + efek tidak boleh pecah: limiter tipis di ujung (suara saja jarang menyentuhnya)
+        parts.append(f"{''.join(mix)}amix=inputs={len(mix)}:duration=first:normalize=0,{MIX_LIMIT}[{dst}]")
     return ";".join(parts)

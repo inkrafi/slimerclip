@@ -140,6 +140,7 @@ export const renderEdit = (videoId: string, key: string, edit: EditRecipe, optio
     body: JSON.stringify({ key, edit, options, transcript }),
   }).then(r => r.job)
 
+
 // ── Video panjang ──
 /** Proyek dari topik berawalan "topic_"; selain itu proyek dari video podcast */
 export const isTopicKey = (key: string) => key.startsWith('topic_')
@@ -208,6 +209,10 @@ export const renderLongform = (videoId: string) =>
   request<{ job: RenderJob }>(`${longformPath(videoId)}/render`, { method: 'POST' }).then(r => r.job)
 
 export const getJob = (jobId: string) => request<{ job: RenderJob }>(`/jobs/${encodeURIComponent(jobId)}`).then(r => r.job)
+
+/** Hentikan job render yang masih antre/berjalan; job ditutup sebagai "error" dengan cancelled = true. */
+export const cancelJob = (jobId: string) =>
+  request<{ job: RenderJob }>(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }).then(r => r.job)
 
 export const uploadAsset = (file: File) => {
   const body = new FormData()

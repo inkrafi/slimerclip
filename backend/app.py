@@ -36,7 +36,7 @@ from accounts import (FREE_ANALYSES, PREVIEW_DAILY_LIMIT, RENDER_DAILY_LIMIT, SE
                       decrypt_key)
 from gemini_service import _gemini_error_message, analyze_youtube_video, validate_api_key
 from download_service import download_video, find_cached_video
-from render_pipeline import RenderPipeline, _remove_quietly
+from render_pipeline import RenderCancelled, RenderPipeline, _remove_quietly
 from jobs import JobManager
 from youtube_utils import extract_video_id as _extract_video_id, is_youtube_url as _is_youtube_url
 
@@ -1068,6 +1068,12 @@ def clip_profile_options():
 def _run_render_job(job_id, user, video_id, segments, options, local_video_path, youtube_url, base):
     """Worker job render: siapkan video sumber lalu render tiap momen, sambil memperbarui status job."""
     options = {**_render_hints(video_id), **options}
+    cancelled = lambda: jobs.is_cancelled(job_id)
+
+    def check_cancel():
+        if cancelled():
+            raise RenderCancelled()
+
     try:
         # 1. Dapatkan video sumber
         if local_video_path:
@@ -1079,6 +1085,7 @@ def _run_render_job(job_id, user, video_id, segments, options, local_video_path,
             jobs.update_download(job_id, status="downloading", progress=0)
 
             def download_cb(msg):
+                check_cancel()
                 fields = {k: msg[k] for k in ("status", "progress") if k in msg}
                 if fields:
                     jobs.update_download(job_id, **fields)
@@ -1086,15 +1093,18 @@ def _run_render_job(job_id, user, video_id, segments, options, local_video_path,
             video_path = download_video(youtube_url, callback=download_cb, video_id=video_id)
             jobs.update_download(job_id, status="finished", progress=100)
             print(f"[Render] Job {job_id}: video sumber {video_path}")
+        check_cancel()
 
         # 2. Render tiap momen (bergantian dengan job lain) — satu gagal tidak menghentikan lainnya
         if not _render_lock.acquire(blocking=False):
             jobs.update(job_id, status="queued", message="Menunggu render lain selesai")
-            _render_lock.acquire()
+            while not _render_lock.acquire(timeout=1):   # tetap bisa dibatalkan selama antre
+                check_cancel()
         try:
             jobs.update(job_id, status="running", message=None)
             failed = 0
             for seg in segments:
+                check_cancel()
                 n = seg["segment_number"]
                 seg_options = {**options, **(seg.get("options") or {})}
                 jobs.update_segment(job_id, n, status="cutting", progress=0)
@@ -1104,7 +1114,10 @@ def _run_render_job(job_id, user, video_id, segments, options, local_video_path,
                         jobs.update_segment(job_id, n, status=msg["status"], progress=msg.get("progress", 0))
 
                 try:
-                    result = render_pipeline.process_clip(video_path, seg, seg_options, callback=render_cb)
+                    result = render_pipeline.process_clip(video_path, seg, {**seg_options, "cancelled": cancelled},
+                                                          callback=render_cb)
+                except RenderCancelled:
+                    raise
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
@@ -1131,6 +1144,15 @@ def _run_render_job(job_id, user, video_id, segments, options, local_video_path,
         jobs.update(job_id, status="done",
                     message=f"{failed} klip gagal dirender" if failed else None)
     except Exception as e:
+        # Dibatalkan: exception apa pun setelah tombol Batalkan (mis. yt-dlp membungkus RenderCancelled) = batal
+        if isinstance(e, RenderCancelled) or cancelled():
+            print(f"[Render] Job {job_id}: dibatalkan pengguna")
+            jobs.update(job_id, status="error", message="Render dibatalkan.")
+            job = jobs.get(job_id)
+            for n, seg in (job["segments"].items() if job else []):
+                if seg["status"] not in ("done", "error"):
+                    jobs.update_segment(job_id, n, status="error", message="Dibatalkan.")
+            return
         import traceback
         traceback.print_exc()
         jobs.update(job_id, status="error", message=str(e)[-500:])
@@ -1152,6 +1174,15 @@ def jobs_list():
 @app.route("/jobs/<job_id>", methods=["GET"])
 def job_detail(job_id):
     job = jobs.get(job_id, owner=_user().id)
+    if not job:
+        return jsonify({"error": "Job tidak ditemukan (mungkin backend sempat di-restart)."}), 404
+    return jsonify({"job": job})
+
+
+@app.route("/jobs/<job_id>/cancel", methods=["POST"])
+def job_cancel(job_id):
+    """Batalkan job render yang masih antre/berjalan. Klip lama (jika ada) tidak tersentuh, jatah tidak terpakai."""
+    job = jobs.cancel(job_id, owner=_user().id)
     if not job:
         return jsonify({"error": "Job tidak ditemukan (mungkin backend sempat di-restart)."}), 404
     return jsonify({"job": job})
@@ -1478,10 +1509,10 @@ def editor_get(video_id):
     final_range = entry.get("range") or playing_range
     transcript = render_pipeline.load_transcript(os.path.join(folder, clip_base + ".words.json"))
     assets = _list_assets(user, base)
-    # Edit otomatis (hook, musik sesuai suasana, efek suara, suara jernih, HD) sebagai titik awal: dipakai langsung
-    # untuk klip yang belum pernah diedit; untuk klip lain tersedia lewat tombol "Edit otomatis"
+    # Edit otomatis (hook, musik sesuai suasana, suara jernih, HD; tanpa efek suara) sebagai titik awal: dipakai
+    # langsung untuk klip yang belum pernah diedit; untuk klip lain tersedia lewat tombol "Edit otomatis"
     auto_recipe, auto_summary = auto_edit.build(
-        _analysis_segment(video_id, entry), playing_range[0], playing_range[1], transcript,
+        _analysis_segment(video_id, entry), playing_range[0], playing_range[1],
         _hook_suggestions(video_id, entry), [a for a in assets if a.get("kind") == "audio"])
     auto = clip_effects.sanitize_edit(auto_recipe, playing_range[0], playing_range[1])
     # Resep tersimpan (termasuk format lama) diseragamkan; tanpa resep = edit otomatis
@@ -1772,9 +1803,8 @@ def render_all(video_id):
         current = (entry.get("range") or entry.get("preview_range")
                    or [render_pipeline._time_to_seconds(entry["start_time"]), render_pipeline._time_to_seconds(entry["end_time"])])
         base_edit = entry.get("edit")
-        if not base_edit:   # belum pernah diedit → mulai dari edit otomatis (efek suara, suara jernih, HD, dst.)
-            words = render_pipeline.load_transcript(os.path.join(folder, _entry_base(entry) + ".words.json"))
-            base_edit, _ = auto_edit.build(_analysis_segment(video_id, entry), current[0], current[1], words,
+        if not base_edit:   # belum pernah diedit → mulai dari edit otomatis (musik, suara jernih, HD, dst.)
+            base_edit, _ = auto_edit.build(_analysis_segment(video_id, entry), current[0], current[1],
                                            _hook_suggestions(video_id, entry),
                                            [a for a in _list_assets(user, "") if a.get("kind") == "audio"])
         edit = clip_effects.sanitize_edit(base_edit, current[0], current[1], meta.get("duration"))

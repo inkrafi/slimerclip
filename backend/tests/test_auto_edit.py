@@ -4,10 +4,6 @@ import clip_profile
 import subtitle_translate
 
 
-def _transcript(*words):
-    return {"segments": [{"words": [{"start": a, "end": b, "word": w} for a, b, w in words]}]}
-
-
 def test_mood_and_music_pick():
     assert auto_edit.mood_for({"emotion_trigger": "TAWA"}) == "lucu"
     assert auto_edit.mood_for({"emotion_trigger": "KONTROVERSI"}) == "tegang"
@@ -18,23 +14,24 @@ def test_mood_and_music_pick():
     assert auto_edit.pick_music("tegang", ["x_lofi.mp3"]) == "bgm_tegang.m4a"
 
 
-def test_auto_recipe_is_valid_and_tasteful():
+def test_auto_recipe_is_valid_and_has_no_sfx():
     seg = {"emotion_trigger": "KAGET", "hook_start": "01:52"}
-    words = _transcript((100.2, 100.6, " Ini"), (104.0, 104.5, " 2"), (104.5, 105.0, " juta"),
-                        (111.9, 112.3, " Tapi"), (130.0, 130.4, " 50"), (131.0, 131.4, " persen"))
-    recipe, summary = auto_edit.build(seg, 100.0, 140.0, words, ["Kenapa dia *nolak*?"], [])
+    audio = [{"name": "a1b2c3d4_vine_boom.mp3", "size_mb": 0.1}]
+    recipe, summary = auto_edit.build(seg, 100.0, 140.0, ["Kenapa dia *nolak*?"], audio)
     edit = clip_effects.sanitize_edit(recipe, 100.0, 140.0)
     assert edit["hook"]["enabled"] and edit["hook"]["text"] == "Kenapa dia *nolak*?" and edit["hook"]["anim"] == "pop"
-    assert edit["music"]["asset"] == "bgm_tegang.m4a" and edit["music"]["volume"] == 18
+    assert edit["music"]["asset"] == "bgm_tegang.m4a" and edit["music"]["volume"] == 11     # -19 dB
     assert edit["voice"] == {"volume": 100, "clean": True} and edit["enhance"] == {"video": True}
-    kinds = [(s["asset"], s["at"]) for s in edit["sfx"]]
-    assert kinds[0] == ("lib_whoosh_deep.wav", 100.05)                # transisi saat hook muncul (suasana tegang)
-    assert ("lib_dun_dun.wav", 111.78) in kinds                        # tepat sebelum kalimat terkuat
-    assert any(a == "lib_ding.wav" and t == 130.0 for a, t in kinds)   # angka penting
-    assert not any(a == "lib_ding.wav" and t < 105 for a, t in kinds)  # bukan selama hook tampil
-    ats = [t for _, t in kinds]
-    assert len(kinds) <= auto_edit.MAX_SFX and all(b - a >= auto_edit.SFX_GAP for a, b in zip(ats[1:], ats[2:]))
-    assert summary["music"] == "Tegang / serius" and summary["sfx"] == len(kinds)
+    assert edit["sfx"] == []                                           # efek suara hanya dipasang manual
+    assert summary["music"] == "Tegang / serius"
+
+
+def test_old_auto_sfx_dropped_manual_sfx_kept():
+    edit = clip_effects.sanitize_edit({"sfx": [{"asset": "lib_hit_1.wav", "at": 5, "volume": 40, "track": "hit"},
+                                               {"asset": "lib_pop.wav", "at": 6, "volume": 40}]}, 0, 30)
+    assert edit["sfx"] == [{"asset": "lib_pop.wav", "at": 6, "volume": 40}]
+    graph = clip_effects.audio_graph(None, None, [(1, 1.0, 50)], 30, True, "aout")
+    assert graph.endswith("alimiter=limit=0.95:level=0[aout]")
 
 
 def test_speech_chain_voice_options():
@@ -75,37 +72,21 @@ def test_template_without_music_keeps_clip_music():
     assert out["music"]["asset"] == "bgm_santai.m4a"
 
 
-def test_funny_moment_gets_rimshot_after_punchline_and_money_gets_kaching():
-    seg = {"emotion_trigger": "TAWA", "hook_start": "00:20"}
-    words = _transcript((20.0, 20.4, " Terus"), (20.5, 21.0, " dia"), (21.1, 21.6, " jatuh."), (22.0, 22.3, " Haha"),
-                        (30.0, 30.3, " 5"), (30.3, 30.8, " juta"))
-    recipe, _ = auto_edit.build(seg, 10.0, 45.0, words, ["Endingnya *nggak* nyangka"], [])
-    kinds = {s["asset"]: s["at"] for s in recipe["sfx"]}
-    assert recipe["sfx"][0]["asset"] == "lib_swipe.wav"
-    assert kinds["lib_rimshot.wav"] == 21.75                            # setelah "jatuh." selesai
-    assert kinds["lib_ka_ching.wav"] == 30.0                            # nominal uang
-
-
-def test_user_sfx_replaces_builtin_by_name():
+def test_user_audio_large_file_is_music():
     seg = {"emotion_trigger": "KONTROVERSI", "hook_start": "00:20"}
-    words = _transcript((20.0, 20.5, " Ini"))
-    audio = [{"name": "a1b2c3d4_vine_boom.mp3", "size_mb": 0.1}, {"name": "x_dramatic_dun.mp3", "size_mb": 0.2},
-             {"name": "y_epic_tense_theme.mp3", "size_mb": 4.0}]
-    recipe, summary = auto_edit.build(seg, 10.0, 45.0, words, ["Hook"], audio)
-    assets = [s["asset"] for s in recipe["sfx"]]
-    assert "x_dramatic_dun.mp3" in assets                               # pengganti "dun dun"
+    audio = [{"name": "a1b2c3d4_vine_boom.mp3", "size_mb": 0.1}, {"name": "y_epic_tense_theme.mp3", "size_mb": 4.0}]
+    recipe, _ = auto_edit.build(seg, 10.0, 45.0, ["Hook"], audio)
     assert recipe["music"]["asset"] == "y_epic_tense_theme.mp3"         # file besar = musik
-    assert "vine_boom" not in recipe["music"]["asset"]
+    assert recipe["sfx"] == []
 
 
 def test_sfx_library_grouped_and_files_exist():
     import os
     assert len(clip_effects.SFX_LIBRARY) >= 40
-    assert set(clip_effects.SFX_GROUP_OF.values()) == {"Transisi", "Penekanan", "Lucu", "Notifikasi", "Suasana"}
+    assert set(clip_effects.SFX_GROUP_OF.values()) == {"Transisi", "Penekanan", "Lucu", "Notifikasi", "Suasana",
+                                                       "Whoosh (gerakan)", "Tekstur (kejadian)", "Riser & hit"}
     for name in clip_effects.SFX_LIBRARY:
         assert os.path.isfile(os.path.join(clip_effects.SFX_DIR, name)), name
-    for whoosh, punch in auto_edit.MOOD_SFX.values():
-        assert whoosh in clip_effects.SFX_LIBRARY and punch in clip_effects.SFX_LIBRARY
 
 
 def test_music_rotation_tags_and_guess():
@@ -113,10 +94,10 @@ def test_music_rotation_tags_and_guess():
               {"name": "b_song2.mp3", "mood": "lucu", "mood_source": "tag", "size_mb": 3},
               {"name": "c_all.mp3", "mood": "umum", "mood_source": "tag", "size_mb": 3},
               {"name": "d_funny_boing.mp3", "mood": "lucu", "mood_source": "name", "size_mb": 0.1}]
-    picks = {auto_edit.build({"emotion_trigger": "TAWA"}, s, s + 40, None, [], tracks)[0]["music"]["asset"] for s in (10, 11)}
+    picks = {auto_edit.build({"emotion_trigger": "TAWA"}, s, s + 40, [], tracks)[0]["music"]["asset"] for s in (10, 11)}
     assert picks == {"a_song1.mp3", "b_song2.mp3"}                    # bergantian antar klip
-    tense = auto_edit.build({"emotion_trigger": "KONTROVERSI"}, 10, 50, None, [], tracks)[0]["music"]["asset"]
+    tense = auto_edit.build({"emotion_trigger": "KONTROVERSI"}, 10, 50, [], tracks)[0]["music"]["asset"]
     assert tense == "c_all.mp3"                                        # tidak ada yang tegang → "umum"
     # Tebakan nama tidak menjadikan file SFX kecil sebagai musik
-    assert auto_edit.build({"emotion_trigger": "TAWA"}, 12, 52, None, [], tracks[3:])[0]["music"]["asset"] == "bgm_lucu.m4a"
+    assert auto_edit.build({"emotion_trigger": "TAWA"}, 12, 52, [], tracks[3:])[0]["music"]["asset"] == "bgm_lucu.m4a"
     assert auto_edit.guess_mood("x_lofi_chill.mp3") == "santai" and auto_edit.guess_mood("x_track.mp3") is None

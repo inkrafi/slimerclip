@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { AlertCircle, Download, Loader2, RotateCcw, Sparkles, Wand2 } from 'lucide-react'
+import { AlertCircle, CircleStop, Download, Loader2, RotateCcw, Sparkles, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import CaptionStyleEditor, { Range, Row, Toggle } from '@/components/CaptionStyleEditor'
 import AssetPicker from '@/components/editor/AssetPicker'
@@ -15,7 +15,7 @@ import ThumbnailPanel from '@/components/editor/ThumbnailPanel'
 import TemplatePanel from '@/components/editor/TemplatePanel'
 import TranscriptEditor from '@/components/editor/TranscriptEditor'
 import TrimBar from '@/components/editor/TrimBar'
-import { deleteTemplate, downloadUrl, getEditor, getJob, renderEdit, RENDER_STARTED_EVENT, saveTemplate } from '@/lib/api'
+import { cancelJob, deleteTemplate, downloadUrl, getEditor, getJob, renderEdit, RENDER_STARTED_EVENT, saveTemplate } from '@/lib/api'
 import { CAPTION_FONTS, CaptionFont, saveCaptionStyle } from '@/lib/caption-presets'
 import { HOOK_ACCENTS, HOOK_ANIM_OPTIONS, HOOK_STYLE_OPTIONS } from '@/lib/hook-look'
 import type {
@@ -107,7 +107,10 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
         if (next.status === 'done' || next.status === 'error') {
           clearInterval(timer)
           const seg = Object.values(next.segments)[0]
-          if (next.status === 'done' && seg?.status === 'done') {
+          if (next.cancelled) {
+            setJob(null)
+            toast('Render dihentikan. Klip sebelumnya tetap aman dan jatah render tidak terpakai.')
+          } else if (next.status === 'done' && seg?.status === 'done') {
             await load()
             setJob(null)
             toast.success('Klip final siap diunduh')
@@ -144,6 +147,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
   ]
   const baked = data.clip.edit
   const rendering = job !== null && job.status !== 'error'
+  const stopping = rendering && !!job?.cancelled
   const jobSegment = job ? Object.values(job.segments)[0] : null
   const failed = job?.status === 'error' || jobSegment?.status === 'error'
   const dirty = transcriptDirty
@@ -190,6 +194,17 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
     }
   }
 
+  // Hentikan render: backend mematikan FFmpeg; status akhirnya datang lewat polling job
+  const stop = async () => {
+    if (!job) return
+    try {
+      const next = await cancelJob(job.id)
+      setJob(j => (j?.id === next.id ? { ...j, cancelled: next.cancelled, message: next.message } : j))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Render gagal dihentikan. Coba lagi.')
+    }
+  }
+
   const sourceDefault = data.channel ? `Sumber: ${data.channel} (YouTube)` : 'Sumber: YouTube'
 
   // Format edit: tampilan & pengaturan dari format tersimpan; rentang, teks caption & efek suara klip ini tetap
@@ -232,10 +247,9 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
     }
   }
 
-  // Edit otomatis: hook, musik sesuai suasana, efek suara, suara jernih, HD. Rentang & watermark klip tetap.
+  // Edit otomatis: hook, musik sesuai suasana, suara jernih, HD. Rentang, watermark & efek suara manual klip tetap.
   const applyAuto = () => {
     const auto = data.auto_edit
-    const shift = edit.start - auto.start
     setEdit({
       ...edit,
       hook: auto.hook,
@@ -243,7 +257,6 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
       vignette: auto.vignette,
       voice: auto.voice,
       enhance: auto.enhance,
-      sfx: auto.sfx.map(x => ({ ...x, at: Math.round((x.at + shift) * 100) / 100 })).filter(x => x.at < edit.end),
     })
     setAutoApplied(true)
     toast.success('Edit otomatis diterapkan. Sesuaikan lalu render.')
@@ -517,7 +530,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
             )}
           </Section>
 
-          <Section title="Efek suara" hint="Tambahkan bunyi di momen tertentu, misalnya pop saat punchline atau whoosh saat ganti topik.">
+          <Section title="Efek suara" hint="Tambahkan bunyi sendiri di momen tertentu. Tidak ada efek suara yang dipasang otomatis.">
             <SfxPanel
               sfx={edit.sfx}
               library={data.sfx_library}
@@ -676,7 +689,12 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-rule bg-bay/90 backdrop-blur-md">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 sm:px-6 h-16">
           <div className="min-w-0 flex-1 text-sm">
-            {rendering && jobSegment ? (
+            {stopping ? (
+              <span className="flex items-center gap-2 text-ink" role="status">
+                <Loader2 className="size-4 animate-spin shrink-0" aria-hidden />
+                <span className="truncate">Menghentikan render…</span>
+              </span>
+            ) : rendering && jobSegment ? (
               <span className="flex items-center gap-2 text-ink">
                 <Loader2 className="size-4 animate-spin shrink-0" aria-hidden />
                 <span className="truncate">{STATUS_LABEL[jobSegment.status] ?? 'Merender'}… {Math.round(jobSegment.progress)}%</span>
@@ -703,12 +721,16 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
               <RotateCcw className="size-4" aria-hidden /> Batalkan
             </button>
           )}
-          {canDownload ? (
+          {rendering ? (
+            <button type="button" onClick={stop} disabled={stopping} aria-busy={stopping} className="btn btn-quiet">
+              <CircleStop className="size-4" aria-hidden /> Hentikan render
+            </button>
+          ) : canDownload ? (
             <a href={downloadUrl(finalUrl)} download className="btn btn-primary">
               <Download className="size-4" aria-hidden /> Unduh
             </a>
           ) : (
-            <button type="button" onClick={submit} disabled={rendering || !data.source_ready || outOfQuota || (!!finalUrl && !dirty)}
+            <button type="button" onClick={submit} disabled={!data.source_ready || outOfQuota || (!!finalUrl && !dirty)}
               className="btn btn-primary">
               <Wand2 className="size-4" aria-hidden /> {finalUrl ? 'Render ulang' : 'Render final'}
             </button>
@@ -734,7 +756,6 @@ function AutoEditBanner({ applied, summary, disabled, onApply, onClear }: {
   const parts = [
     summary.hook && `hook “${summary.hook.replaceAll('*', '')}”`,
     `musik ${summary.music}`,
-    `${summary.sfx} efek suara`,
     'suara jernih',
     'video HD',
   ].filter(Boolean)

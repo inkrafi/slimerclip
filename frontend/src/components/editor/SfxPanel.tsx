@@ -171,9 +171,7 @@ export default function SfxPanel({ sfx, library, assets, range, playhead, disabl
       </div>
       <p className="text-xs text-ink-faint">
         Putar video, berhenti di titik yang diinginkan, lalu klik efeknya. Upload sendiri (bisa banyak sekaligus): MP3, WAV,
-        OGG. File kecil yang namanya berisi kata kuncinya, mis. <span className="font-mono text-ink">vine_boom.mp3</span>,
-        <span className="font-mono text-ink"> whoosh.wav</span>, <span className="font-mono text-ink">kaching.mp3</span>, dipakai
-        otomatis oleh edit otomatis menggantikan bunyi bawaan sejenis.
+        OGG. Efek suara tidak pernah ditambahkan otomatis, hanya yang kamu pasang di sini.
       </p>
     </div>
   )
