@@ -13,12 +13,12 @@ import RenderIndicator from '@/components/RenderIndicator'
 import { syne } from '@/lib/fonts'
 import { ADMIN_HOME, hasContactBand, isAuthPath, isClientPath, isPublicPath } from '@/lib/routes'
 
-const isLongform = (p: string) => p.startsWith('/longform') || /^\/video\/[^/]+\/longform/.test(p)
+const isVideoProject = (p: string) => p.startsWith('/proyek-video') || /^\/video\/[^/]+\/longform/.test(p)
 
 /** Ruang kerja admin: semua fitur produksi. Selalu berbahasa Indonesia. */
 const ADMIN_NAV = [
-  { href: ADMIN_HOME, label: 'Ruang kerja', match: (p: string) => p === ADMIN_HOME || (p.startsWith('/video') && !isLongform(p)) },
-  { href: '/longform', label: 'Video panjang', match: isLongform },
+  { href: ADMIN_HOME, label: 'Ruang kerja', match: (p: string) => p === ADMIN_HOME || (p.startsWith('/video') && !isVideoProject(p)) },
+  { href: '/proyek-video', label: 'Proyek video', match: isVideoProject },
   { href: '/proyek-motion', label: 'Proyek motion', match: (p: string) => p.startsWith('/proyek-motion') },
   { href: '/laporan', label: 'Laporan', match: (p: string) => p.startsWith('/laporan') },
   { href: '/riwayat', label: 'Riwayat', match: (p: string) => p.startsWith('/riwayat') },

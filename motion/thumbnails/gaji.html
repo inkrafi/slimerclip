@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<title>Thumbnail Klik Digital ID</title>
+<!-- Dibuka Chrome headless 1280x720. Pilih versi lewat #a, #b, atau #c. Pojok kanan bawah dikosongkan untuk label durasi. -->
+<style>
+@font-face { font-family: Plex; font-weight: 700; src: url(../public/klik/fonts/ibm-plex-sans-latin-700-normal.woff2); }
+@font-face { font-family: PlexMono; font-weight: 600; src: url(../public/klik/fonts/ibm-plex-mono-latin-600-normal.woff2); }
+* { box-sizing: border-box; margin: 0; }
+html, body { width: 1280px; height: 720px; overflow: hidden; }
+body { font-family: Plex, sans-serif; font-weight: 700; }
+.v { display: none; position: relative; width: 1280px; height: 720px; overflow: hidden; }
+.mark { position: absolute; left: 44px; top: 34px; font: 600 26px PlexMono, monospace; display: flex; align-items: center; gap: 12px; }
+.mark::before { content: ""; width: 16px; height: 16px; border-radius: 50%; background: #3dffa2; box-shadow: 0 0 0 3px #14201a; }
+
+/* A: struk, sisa dilingkari merah */
+#a { background: #f3efe4; color: #14201a; }
+#a h1 { position: absolute; left: 44px; top: 130px; font-size: 118px; line-height: 1.02; letter-spacing: -2px; }
+#a h1 em { font-style: normal; display: inline-block; background: #14201a; color: #3dffa2; padding: 6px 20px 10px; margin-top: 14px; font-size: 84px; letter-spacing: -1px; }
+#a .struk { position: absolute; right: 44px; top: -30px; width: 450px; height: 610px; background: #fffdf6; padding: 80px 34px 0; transform: rotate(4deg); box-shadow: 0 24px 60px #14201a44; font: 600 34px PlexMono, monospace; }
+#a .row { display: flex; justify-content: space-between; padding: 13px 0; color: #5e665d; }
+#a .sisa { margin: 26px -14px 0; padding: 26px 0; font-size: 68px; color: #c62f2b; text-align: center; letter-spacing: -2px; border: 9px solid #c62f2b; border-radius: 50%; }
+
+/* B: satu angka raksasa di layar gelap */
+#b { background: #0a0f0d; color: #eef4ef; background-image: linear-gradient(#ffffff0c 2px, transparent 2px), linear-gradient(90deg, #ffffff0c 2px, transparent 2px); background-size: 90px 90px; }
+#b .small { position: absolute; left: 44px; top: 118px; font-size: 76px; }
+#b .big { position: absolute; left: 34px; top: 180px; font: 600 250px PlexMono, monospace; letter-spacing: -14px; color: #ff5c57; }
+#b .sub { position: absolute; left: 44px; top: 535px; font-size: 92px; background: #3dffa2; color: #0a0f0d; padding: 4px 24px 12px; }
+
+/* C: grafik saldo jatuh */
+#c { background: #3dffa2; color: #14201a; }
+#c h1 { position: absolute; left: 44px; top: 112px; font-size: 128px; line-height: 1; letter-spacing: -3px; }
+#c svg { position: absolute; right: 0; top: 0; }
+</style>
+</head>
+<body>
+<section class="v" id="a">
+  <div class="mark">KLIK DIGITAL ID</div>
+  <h1>GAJI<br>10 JUTA<br><em>SISA SEGINI?</em></h1>
+  <div class="struk">
+    <div class="row"><span>Kos</span><span>-3 jt</span></div>
+    <div class="row"><span>Makan</span><span>-2,5 jt</span></div>
+    <div class="row"><span>Cicilan</span><span>-1,5 jt</span></div>
+    <div class="sisa">Rp500rb</div>
+  </div>
+</section>
+<section class="v" id="b">
+  <div class="mark" style="color:#eef4ef">KLIK DIGITAL ID</div>
+  <div class="small">Gaji 10 juta, sisa:</div>
+  <div class="big">Rp500rb</div>
+  <div class="sub">KOK BISA?</div>
+</section>
+<section class="v" id="c">
+  <div class="mark">KLIK DIGITAL ID</div>
+  <h1>GAJI<br>BOCOR<br>DI SINI</h1>
+  <svg width="760" height="720" viewBox="0 0 760 720" fill="none">
+    <rect x="130" y="60" width="600" height="520" rx="26" fill="#0a0f0d"/>
+    <path d="M180 120L250 330 320 390 420 440 520 480 620 510 690 525" stroke="#ff5c57" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+    <ellipse cx="250" cy="300" rx="104" ry="128" transform="rotate(-14 250 300)" stroke="#fffdf6" stroke-width="10"/>
+    <circle cx="180" cy="120" r="16" fill="#3dffa2"/>
+  </svg>
+</section>
+<script>document.getElementById((location.hash || '#a').slice(1)).style.display = 'block';</script>
+</body>
+</html>

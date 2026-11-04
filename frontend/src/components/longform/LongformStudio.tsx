@@ -6,16 +6,17 @@ import { AudioLines, Check, Copy, Download, FileText, Film, Image as ImageIcon, 
 import { toast } from 'sonner'
 import SceneCard from '@/components/longform/SceneCard'
 import ThumbnailPanel from '@/components/longform/ThumbnailPanel'
+import VoicePicker from '@/components/longform/VoicePicker'
 import { useAuth } from '@/components/AuthProvider'
 import {
   autoLongformMotion, autoLongformVisuals, createLongformScript, deleteLongformAudio, downloadUrl, getJob, getJobs, getLongform, isJobActive,
-  RENDER_STARTED_EVENT, renderLongform, saveLongform, uploadLongformRecording,
+  longformTts, prepareTopicProject, RENDER_STARTED_EVENT, renderLongform, saveLongform, uploadLongformRecording,
 } from '@/lib/api'
 import { formatClock, formatSpan } from '@/lib/clip-meta'
 import { chapterCount, newSceneId, sceneSeconds, STOCK_NAMES } from '@/lib/longform'
 import type { LongformData, LongformProject, LongformScene, RenderJob } from '@/lib/types'
 
-type Busy = 'script' | 'save' | 'motion' | 'visuals' | 'render' | null
+type Busy = 'script' | 'save' | 'motion' | 'visuals' | 'render' | 'prepare' | null
 
 const POLL_MS = 2000
 
@@ -125,6 +126,19 @@ function Studio({ videoId }: { videoId: string }) {
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirty])
 
+  // Selama Generate berjalan, tampilkan hasil yang sudah jadi. Editor baru terbuka setelah selesai.
+  const preparing = !!data?.preparing?.running
+  useEffect(() => {
+    if (!preparing) return
+    const timer = setInterval(() => {
+      getLongform(videoId).then(next => {
+        apply(next)
+        if (!next.preparing?.running) toast.success('Video siap disesuaikan. Render kalau sudah cocok.')
+      }).catch(() => {})
+    }, POLL_MS)
+    return () => clearInterval(timer)
+  }, [preparing, videoId, apply])
+
   const edit = (fn: (p: LongformProject) => LongformProject) => {
     setDraft(prev => prev && fn(prev))
     setDirty(true)
@@ -163,7 +177,7 @@ function Studio({ videoId }: { videoId: string }) {
     }
     if (replace && !confirm('Buat ulang naskah? Naskah, suara, dan visual yang sekarang akan diganti.')) return
     run('script', async () => {
-      apply(await createLongformScript(videoId, minutes, angle, channel ?? ''))
+      apply(await createLongformScript(videoId, minutes, angle, channel ?? '', draft?.seconds))
       toast.success('Naskah siap. Periksa dan edit sebelum merekam suara.')
     })
   }
@@ -191,6 +205,11 @@ function Studio({ videoId }: { videoId: string }) {
     apply(await autoLongformVisuals(videoId))
   })
 
+  const completeAll = () => run('prepare', async () => {
+    if (!(await save())) return
+    apply(await prepareTopicProject(videoId))
+  })
+
   const startRender = () => run('render', async () => {
     if (!(await save())) return
     setJob(await renderLongform(videoId))
@@ -201,14 +220,20 @@ function Studio({ videoId }: { videoId: string }) {
   if (!data) return <p className="pt-16 flex items-center gap-2 text-ink-muted"><Loader2 className="size-4 animate-spin" aria-hidden /> Memuat…</p>
 
   const fromTopic = data.kind === 'topic'
+  const isShort = draft?.format === 'short'
+  const isChannel = !!draft?.format
   const header = (
     <>
-      <Link href={fromTopic ? '/longform' : `/video/${videoId}`} className="text-sm text-ink-muted underline underline-offset-4 decoration-rule hover:text-ink">
-        {fromTopic ? 'Kembali ke daftar video panjang' : 'Kembali ke momen video'}
+      <Link href={isShort ? '/proyek-video?tab=short' : fromTopic ? '/proyek-video' : `/video/${videoId}`} className="text-sm text-ink-muted underline underline-offset-4 decoration-rule hover:text-ink">
+        {fromTopic ? 'Kembali ke proyek video' : 'Kembali ke momen video'}
       </Link>
-      <h1 className="mt-3 type-display text-4xl text-ink">Video panjang</h1>
+      <h1 className="mt-3 type-display text-4xl text-ink">{isShort ? 'Video pendek' : 'Video panjang'}</h1>
       <p className="mt-2 max-w-[68ch] text-ink-muted">
-        {fromTopic
+        {isShort
+          ? `Video 9:16 maksimal ${data.short_max} detik tentang "${draft?.topic || ''}". Tiap adegan punya latar sendiri dari animasi dan video stok.`
+          : isChannel
+          ? `Video 16:9 tentang "${draft?.topic || ''}". Animasi penuh, latar berganti, dan bab, ditulis dari berita sumber di bawah.`
+          : fromTopic
           ? `Video 16:9 tanpa wajah tentang "${draft?.topic || ''}", ditulis dari berita sumber di bawah.`
           : 'Video 16:9 tanpa wajah dari podcast ini: narasi rangkuman, video stok, dan kutipan asli narasumber, lengkap dengan bab.'}
       </p>
@@ -264,9 +289,12 @@ function Studio({ videoId }: { videoId: string }) {
   const noVisual = narration.filter(s => !s.visual).length
   const total = scenes.reduce((sum, s) => sum + sceneSeconds(s), 0)
   const chapters = chapterCount(scenes)
-  const locked = busy !== null || jobActive
+  const locked = busy !== null || jobActive || preparing
+  const prepareInfo = data.preparing
+  const hasGaps = missingAudio > 0 || (noVisual > 0 && !!data.stock_provider) || (!isShort && !draft.thumbnail)
   const output = draft.output
-  const renderBlocked = missingAudio > 0 || (quotes > 0 && !data.source_ready)
+  const overLimit = isShort && total > data.short_max
+  const renderBlocked = missingAudio > 0 || overLimit || (quotes > 0 && !data.source_ready)
 
   const withVisual = narration.length - noVisual
   const steps = [
@@ -276,7 +304,7 @@ function Studio({ videoId }: { videoId: string }) {
     { icon: ImageIcon, label: 'Visual', detail: `${withVisual}/${narration.length}`, done: noVisual === 0,
       hint: !data.stock_provider ? 'Latar polos (opsional)' : noVisual ? 'Isi otomatis atau pilih' : 'Siap' },
     { icon: Film, label: 'Render', detail: output ? formatSpan(output.duration) : '', done: !!output && !jobActive,
-      hint: jobActive ? 'Sedang dirender' : output ? 'Selesai' : renderBlocked ? 'Lengkapi suara dulu' : 'Siap dirender' },
+      hint: jobActive ? 'Sedang dirender' : output ? 'Selesai' : overLimit ? 'Terlalu panjang' : renderBlocked ? 'Lengkapi suara dulu' : 'Siap dirender' },
   ]
 
   return (
@@ -299,6 +327,21 @@ function Studio({ videoId }: { videoId: string }) {
         ))}
       </ol>
 
+      {preparing && prepareInfo && (
+        <section role="status" className="mt-6 rounded-lg border border-teal/40 bg-teal/5 p-4">
+          <p className="flex items-center gap-2 font-semibold text-ink">
+            <Loader2 className="size-4 animate-spin" aria-hidden /> {prepareInfo.step}
+            {prepareInfo.total > 0 && prepareInfo.step === 'Membuat suara' && <span className="timecode font-normal text-ink-muted">{prepareInfo.done}/{prepareInfo.total} adegan</span>}
+          </p>
+          <p className="mt-1 text-sm text-ink-muted">Halaman ini boleh ditinggal. Editor terbuka setelah semuanya selesai, dan videonya baru dirender kalau kamu menekan Render.</p>
+        </section>
+      )}
+      {!preparing && !!prepareInfo?.errors.length && (
+        <section role="alert" className="mt-6 border-l-2 border-tally pl-4 text-sm text-ink-muted">
+          {prepareInfo.errors.map(message => <p key={message}>{message}</p>)}
+        </section>
+      )}
+
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_20rem] items-start">
         <div className="min-w-0 space-y-6">
           <section className="space-y-3">
@@ -308,7 +351,7 @@ function Studio({ videoId }: { videoId: string }) {
                 className="mt-1 h-11 w-full rounded-md border border-rule bg-bay px-3 text-lg font-semibold text-ink focus:border-signal focus:outline-none" />
             </label>
             <label className="block">
-              <span className="text-sm text-ink-muted">Ringkasan (awal deskripsi YouTube)</span>
+              <span className="text-sm text-ink-muted">{isShort ? 'Keterangan unggahan' : 'Ringkasan (awal deskripsi YouTube)'}</span>
               <textarea value={draft.summary} maxLength={400} disabled={locked} onChange={e => edit(p => ({ ...p, summary: e.target.value }))}
                 className="field-sizing-content mt-1 min-h-14 w-full resize-none rounded-md border border-rule bg-bay px-3 py-2 text-sm text-ink focus:border-signal focus:outline-none" />
             </label>
@@ -318,9 +361,14 @@ function Studio({ videoId }: { videoId: string }) {
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 id="scenes-title" className="type-heading text-2xl text-ink">Naskah</h2>
               <p className="text-sm text-ink-muted">
-                {scenes.length} adegan, {chapters} bab, ±{formatSpan(total)}
+                {scenes.length} adegan{isShort ? '' : `, ${chapters} bab`}, ±{formatSpan(total)}
               </p>
             </div>
+            {overLimit && (
+              <p role="alert" className="mt-2 border-l-2 border-tally pl-3 text-sm text-ink-muted">
+                Naskahnya sekitar {Math.round(total)} detik, sedangkan video pendek maksimal {data.short_max} detik. Pendekkan atau hapus satu adegan.
+              </p>
+            )}
             <ol className="mt-4 space-y-5">
               {scenes.map((scene, i) => (
                 <SceneCard
@@ -331,6 +379,9 @@ function Studio({ videoId }: { videoId: string }) {
                   locked={locked}
                   working={working.has(scene.id)}
                   stockProvider={data.stock_provider}
+                  hideChapter={isShort}
+                  fullMotion={isChannel}
+                  onTts={isChannel ? () => sceneOp(scene.id, () => longformTts(videoId, scene.id)) : undefined}
                   onChange={patch => editScene(scene.id, patch)}
                   onMove={dir => edit(p => {
                     const next = [...p.scenes]
@@ -353,6 +404,15 @@ function Studio({ videoId }: { videoId: string }) {
         </div>
 
         <aside className="space-y-4 lg:sticky lg:top-20">
+          {fromTopic && hasGaps && !preparing && (
+            <section className="rounded-lg border border-rule glass p-4">
+              <h2 className="font-semibold text-ink">Ada yang belum lengkap</h2>
+              <p className="mt-1 text-sm text-ink-muted">Suara, visual, atau thumbnail yang belum ada dibuat sekaligus. Yang sudah ada tidak diganti.</p>
+              <button type="button" onClick={completeAll} disabled={locked} className="btn btn-primary mt-3 min-h-11 w-full justify-center">
+                {busy === 'prepare' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Wand2 className="size-4" aria-hidden />} Lengkapi otomatis
+              </button>
+            </section>
+          )}
           <section className="rounded-lg border border-rule glass p-4">
             <div className="flex items-center justify-between gap-2">
               <h2 className="font-semibold text-ink">Naskah</h2>
@@ -402,8 +462,17 @@ function Studio({ videoId }: { videoId: string }) {
           <section className="rounded-lg border border-rule glass p-4">
             <h2 className="font-semibold text-ink">Suara</h2>
             <p className="mt-1 text-sm text-ink-muted">
-              {missingAudio ? `${missingAudio} adegan belum direkam.` : 'Semua adegan sudah direkam.'} Rekam atau unggah suaramu di tiap adegan.
+              {missingAudio ? `${missingAudio} adegan belum punya suara.` : 'Semua adegan sudah punya suara.'} Rekam atau unggah suaramu di tiap adegan{isChannel ? ', atau pakai suara AI.' : '.'}
             </p>
+            {isChannel && (
+              <div className="mt-2">
+                <VoicePicker voices={data.voices} value={draft.voice.voice} disabled={locked} onChange={voice => edit(p => ({ ...p, voice: { ...p.voice, voice } }))} />
+                <p className="mt-1 text-xs text-ink-faint">Setelah ganti suara, klik Simpan lalu Lengkapi otomatis.</p>
+                {data.voices.find(v => v.id === draft.voice.voice)?.name?.startsWith('ElevenLabs') && (
+                  <p className="mt-1 text-xs text-ink-faint">Paket free ElevenLabs hanya untuk uji coba: tidak boleh dimonetisasi, dan judulnya wajib menyebut elevenlabs.io.</p>
+                )}
+              </div>
+            )}
           </section>
 
           <section className="rounded-lg border border-rule glass p-4">
@@ -437,7 +506,11 @@ function Studio({ videoId }: { videoId: string }) {
 
           <section className="rounded-lg border border-rule glass p-4">
             <h2 className="font-semibold text-ink">Render</h2>
-            <p className="mt-1 text-sm text-ink-muted">±{formatSpan(total)}, 1920×1080, subtitle & judul bab.</p>
+            <p className="mt-1 text-sm text-ink-muted">
+              {isShort ? `±${formatSpan(total)}, 1080×1920, subtitle, latar berganti, dan musik. Render ±5 menit per menit video.`
+                : isChannel ? `±${formatSpan(total)}, 1920×1080, animasi penuh, bab, dan musik. Render ±5 menit per menit video, jadi 8 menit butuh sekitar 40 menit.`
+                : `±${formatSpan(total)}, 1920×1080, subtitle & judul bab.`}
+            </p>
             {missingAudio > 0 && <p className="mt-1 text-xs text-signal">{missingAudio} adegan belum punya suara terbaru.</p>}
             <button type="button" onClick={startRender} disabled={locked || renderBlocked} className="btn btn-primary mt-3 w-full">
               {jobActive || busy === 'render' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Film className="size-4" aria-hidden />}
@@ -455,25 +528,27 @@ function Studio({ videoId }: { videoId: string }) {
         </aside>
       </div>
 
-      <ThumbnailPanel
-        key={draft.created_at}
-        videoId={videoId}
-        data={data}
-        project={draft}
-        locked={locked}
-        save={save}
-        onResult={next => {
-          setData(next)
-          setDraft(prev => prev && { ...prev, thumbnail: next.project?.thumbnail ?? null })
-        }}
-      />
+      {!isShort && (
+        <ThumbnailPanel
+          key={`${draft.created_at}-${draft.thumbnail?.filename ?? ''}`}
+          videoId={videoId}
+          data={data}
+          project={draft}
+          locked={locked}
+          save={save}
+          onResult={next => {
+            setData(next)
+            setDraft(prev => prev && { ...prev, thumbnail: next.project?.thumbnail ?? null })
+          }}
+        />
+      )}
 
       {output && (
         <section aria-labelledby="output-title" className="mt-12 border-t border-rule pt-8">
           <h2 id="output-title" className="type-heading text-2xl text-ink">Hasil render</h2>
           <div className="mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem]">
             <div>
-              <video src={output.url} controls preload="metadata" className="aspect-video w-full rounded-md border border-rule bg-black" />
+              <video src={output.url} controls preload="metadata" className={`rounded-md border border-rule bg-black ${isShort ? 'aspect-[9/16] w-full max-w-xs' : 'aspect-video w-full'}`} />
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <a href={downloadUrl(output.url)} download className="btn btn-primary"><Download className="size-4" aria-hidden /> Unduh MP4</a>
                 <span className="text-sm text-ink-muted">{formatSpan(output.duration)}, dirender {output.rendered_at}</span>
@@ -489,12 +564,12 @@ function Studio({ videoId }: { videoId: string }) {
               </div>
               <div>
                 <div className="flex items-center justify-between">
-                  <p className="text-ink-muted">Deskripsi (bab & kredit)</p>
+                  <p className="text-ink-muted">{isShort ? 'Keterangan dan sumber' : 'Deskripsi (bab & kredit)'}</p>
                   <CopyButton text={output.description} label="Salin" />
                 </div>
                 <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-rule bg-bay p-3 font-sans text-ink/90">{output.description}</pre>
               </div>
-              <div>
+              {!isShort && <div>
                 <p className="text-ink-muted">Bab</p>
                 <ul className="mt-1 space-y-0.5">
                   {output.chapters.map(c => <li key={c.at}><span className="timecode text-ink-muted">{formatClock(c.at)}</span> {c.title}</li>)}
@@ -502,7 +577,7 @@ function Studio({ videoId }: { videoId: string }) {
                 {output.chapters.length < 3 && (
                   <p className="mt-1 text-xs text-ink-faint">YouTube baru menampilkan bab jika ada minimal 3 bab (masing-masing ≥10 detik).</p>
                 )}
-              </div>
+              </div>}
             </div>
           </div>
         </section>

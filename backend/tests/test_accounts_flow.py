@@ -547,7 +547,7 @@ def test_longform_flow(env, monkeypatch):
     c, h = env["client"], token("admin@example.com")
     assert c.post("/analyze", headers=h, json={"youtube_url": URL}).status_code == 200
     info = c.get(f"/videos/{VIDEO_ID}/longform", headers=h).json
-    assert info["project"] is None and len(info["voices"]) == 30
+    assert info["project"] is None and sum(not v["name"].startswith("ElevenLabs") for v in info["voices"]) == 30
     # Khusus admin: pengguna biasa ditolak walau videonya ada di pustakanya
     user = token("lf@example.com")
     assert c.post("/analyze", headers=user, json={"youtube_url": URL}).status_code == 200
@@ -631,7 +631,7 @@ def test_longform_topic_flow(env, monkeypatch):
     monkeypatch.setattr(topics, "search_news", lambda q, limit=8: news)
     seen = []
 
-    def fake_script(title, angle, sources, minutes, key, channel=""):
+    def fake_script(title, angle, sources, minutes, key, channel="", seconds=None, video_format=None):
         seen.append((title, angle, sources, minutes, channel))
         project = longform.script_from_ai({"title": f"Video {title}", "summary": "Ringkas.", "scenes": [
             {"kind": "narration", "chapter": "", "text": "Hook.", "query": "stock"},
@@ -716,20 +716,21 @@ def test_longform_recommended_ideas_are_cached(env, monkeypatch):
     calls = []
     monkeypatch.setattr(topics, "gather_headlines", lambda q, n: calls.append(("feed", q, tuple(n))) or [{"title": "x"}])
     monkeypatch.setattr(topics, "generate_ideas", lambda heads, text, key: calls.append(("ai", text)) or [
-        {"title": f"Ide {len(calls)}", "angle": "", "why": "", "sources": []}])
+        {"title": f"Ide {len(calls)}", "angle": "", "why": "", "fit": "short", "fit_reason": "", "sources": []}])
     assert c.get("/longform/ideas/recommended", headers=token("biasa@example.com")).status_code == 403
 
     first = c.get("/longform/ideas/recommended", headers=h).json
     assert first["ideas"][0]["title"] == "Ide 2" and len(calls) == 2
     assert c.get("/longform/ideas/recommended", headers=h).json["ideas"] == first["ideas"]       # dari cache
     assert len(calls) == 2
-    # Niche berubah → dibuat ulang untuk niche baru
+    assert calls[0] == ("feed", "", topics.CHANNEL_NICHE) and first["ideas"][0]["fit"] == "short"
+    # Niche akun hanya menyaring momen podcast klien, rekomendasi channel tetap
     c.put("/me/niche", headers=h, json={"topics": ["investasi"], "comedy": True})
-    again = c.get("/longform/ideas/recommended", headers=h).json
-    assert calls[-2] == ("feed", "", ("investasi",)) and again["niche"] == ["Investasi & saham"]
+    c.get("/longform/ideas/recommended", headers=h)
+    assert len(calls) == 2
     # Muat ulang paksa
     c.get("/longform/ideas/recommended?refresh=1", headers=h)
-    assert len(calls) == 6
+    assert len(calls) == 4
     # File cache tidak muncul sebagai proyek
     assert c.get("/longform/topics", headers=h).json["projects"] == []
 
@@ -929,7 +930,16 @@ def test_motion_projects_flow(env, monkeypatch):
                 {"drive_url": "javascript:alert(1)"}):
         assert c.post("/motion-projects", headers=admin, json={**body, **bad}).status_code == 400
 
+    brief = c.put(f"/motion-projects/{pid}/brief", headers=admin, json={"product": "Acme Baru", "brief": {
+        "message": " Satu pesan ", "seconds": 45, "ui_source": "aneh", "has_logo": True, "cut_square": "ya", "lain": "x"}})
+    assert brief.status_code == 200 and brief.json["project"]["product"] == "Acme Baru"
+    saved = brief.json["project"]["brief"]
+    assert saved["message"] == "Satu pesan" and saved["seconds"] == 45 and saved["ui_source"] == "none"
+    assert saved["has_logo"] is True and saved["cut_square"] is False and "lain" not in saved
+    assert c.put("/motion-projects/000000000000/brief", headers=admin, json={}).status_code == 404
+    assert c.put(f"/motion-projects/{pid}/brief", headers=token("bukan@example.com"), json={}).status_code in (401, 403)
     updated = c.put(f"/motion-projects/{pid}", headers=admin, json={**body, "status": "animasi"})
+    assert updated.json["project"]["brief"]["seconds"] == 45     # ubah data proyek tidak menghapus brief
     assert updated.status_code == 200 and updated.json["project"]["status"] == "animasi"
     assert c.get("/motion-projects", headers=admin).json["projects"][0]["status"] == "animasi"
     assert c.put("/motion-projects/000000000000", headers=admin, json=body).status_code == 404
@@ -937,3 +947,31 @@ def test_motion_projects_flow(env, monkeypatch):
     assert c.delete(f"/motion-projects/{pid}", headers=admin).status_code == 200
     assert c.get("/motion-projects", headers=admin).json["projects"] == []
     assert c.delete(f"/motion-projects/{pid}", headers=admin).status_code == 404
+
+
+def test_voice_preview_is_cached_and_chosen_voice_is_used(env, monkeypatch):
+    import app as app_module
+    import longform
+    c, h = env["client"], token("admin@example.com")
+    assert c.post("/longform/voice-preview", headers=token("biasa@example.com"), json={"voice": "Puck"}).status_code == 403
+    assert c.post("/longform/voice-preview", headers=h, json={"voice": "../rahasia"}).status_code == 400
+    calls = []
+
+    def fake(text, voice, path, key):
+        calls.append(voice["voice"])
+        open(path, "wb").write(b"RIFFcontoh")
+        return 1.0
+    monkeypatch.setattr(longform, "synthesize", fake)
+    first = c.post("/longform/voice-preview", headers=h, json={"voice": "Puck"})
+    assert first.status_code == 200 and first.json["audio"].startswith("data:audio/wav;base64,")
+    assert c.post("/longform/voice-preview", headers=h, json={"voice": "Puck"}).json == first.json and calls == ["Puck"]
+    assert c.get("/longform/topics", headers=h).json["projects"] == []
+
+    assert app_module._channel_voice("Achird")["voice"] == "Achird"
+    assert app_module._channel_voice("bukan-suara")["voice"] != "bukan-suara"
+
+    def broken(text, voice, path, key):
+        raise RuntimeError("macet")
+    monkeypatch.setattr(longform, "synthesize", broken)
+    failed = c.post("/longform/voice-preview", headers=h, json={"voice": "Kore"})
+    assert failed.status_code == 422 and "gagal" in failed.json["error"]

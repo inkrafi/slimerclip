@@ -1,6 +1,7 @@
 """
 Pencatatan proyek jasa motion video (admin). Disimpan sebagai satu berkas JSON per admin.
-Hanya mencatat pekerjaan: klien, paket, status, tenggat, tautan hasil. Produksinya di luar aplikasi.
+Mencatat pekerjaan (klien, paket, status, tenggat, tautan hasil) dan brief klien untuk menyusun prompt.
+Produksi videonya di luar aplikasi.
 """
 import json
 import os
@@ -12,6 +13,13 @@ from datetime import date
 PACKAGES = ("teaser", "launch", "kit", "custom")
 STATUSES = ("konsultasi", "naskah", "animasi", "revisi", "selesai", "batal")
 MAX_PROJECTS = 500
+# Isian brief dan batas panjangnya
+BRIEF_TEXT = {"what_it_is": 300, "audience": 300, "goal": 300, "message": 300, "hook": 300, "problem": 300, "feature": 300,
+              "payoff": 300, "tagline": 120, "cta": 300, "tone": 300, "language": 40, "colors": 120, "fonts": 120,
+              "counter": 60, "glow": 30, "cards": 60, "payoff_view": 80, "revision": 300}
+BRIEF_FLAGS = ("cut_vertical", "cut_square", "has_logo", "has_backgrounds", "cursor_tabs")
+BRIEF_SECONDS = (15, 30, 45, 60)
+UI_SOURCES = ("figma", "screenshots", "none")
 ID_RE = re.compile(r"^[a-f0-9]{12}$")
 
 
@@ -55,6 +63,15 @@ def sanitize(body: dict) -> dict:
     }
 
 
+def sanitize_brief(raw) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    brief = {key: _text(raw.get(key), limit) for key, limit in BRIEF_TEXT.items()}
+    brief.update({key: raw.get(key) is True for key in BRIEF_FLAGS})
+    brief["seconds"] = raw.get("seconds") if raw.get("seconds") in BRIEF_SECONDS else 30
+    brief["ui_source"] = raw.get("ui_source") if raw.get("ui_source") in UI_SOURCES else "none"
+    return brief
+
+
 def load(path: str) -> list:
     try:
         with open(path, encoding="utf-8") as f:
@@ -88,6 +105,18 @@ def update(path: str, project_id: str, body: dict) -> dict | None:
     for i, item in enumerate(items):
         if item.get("id") == project_id:
             items[i] = {**item, **fields, "updated_at": int(time.time())}
+            save(path, items)
+            return items[i]
+    return None
+
+
+def update_brief(path: str, project_id: str, body: dict) -> dict | None:
+    """Simpan brief klien. Nama produk tetap satu sumber, yaitu di data proyek."""
+    items = load(path)
+    for i, item in enumerate(items):
+        if item.get("id") == project_id:
+            items[i] = {**item, "product": _text(body.get("product"), 80), "brief": sanitize_brief(body.get("brief")),
+                        "updated_at": int(time.time())}
             save(path, items)
             return items[i]
     return None

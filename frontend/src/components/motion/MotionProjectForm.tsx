@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, ExternalLink, Loader2 } from 'lucide-react'
+import { ArrowLeft, ExternalLink, FileText, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import ConfirmDialog from '@/components/common/ConfirmDialog'
 import { createMotionProject, deleteMotionProject, getMotionProjects, updateMotionProject } from '@/lib/api'
@@ -65,10 +65,15 @@ export default function MotionProjectForm({ projectId }: { projectId?: string })
     setBusy(true)
     setError(null)
     try {
-      if (projectId) await updateMotionProject(projectId, form)
-      else await createMotionProject(form)
-      toast.success(projectId ? 'Proyek disimpan.' : 'Proyek ditambahkan.')
-      router.push('/proyek-motion')
+      if (projectId) {
+        await updateMotionProject(projectId, form)
+        toast.success('Proyek disimpan.')
+        router.push('/proyek-motion')
+      } else {
+        const project = await createMotionProject(form)
+        toast.success('Proyek ditambahkan. Lanjut isi brief dari klien.')
+        router.push(`/proyek-motion/${project.id}/brief`)
+      }
     } catch (err) {
       setError(message(err, 'Proyek gagal disimpan. Coba lagi.'))
       setBusy(false)
@@ -95,6 +100,12 @@ export default function MotionProjectForm({ projectId }: { projectId?: string })
         <ArrowLeft className="size-4" aria-hidden /> Proyek motion
       </Link>
       <h1 className="mt-2 type-heading text-3xl text-ink">{projectId ? form?.client || 'Proyek' : 'Tambah proyek'}</h1>
+
+      {projectId && form && (
+        <Link href={`/proyek-motion/${projectId}/brief`} className="btn btn-quiet mt-3 -ml-2 min-h-11">
+          <FileText className="size-4" aria-hidden /> Brief dan prompt
+        </Link>
+      )}
 
       {loadError && <p role="alert" className="mt-6 text-tally">{loadError}</p>}
       {!form && !loadError && <div className="mt-6 space-y-4" aria-hidden>{[0, 1, 2].map(i => <div key={i} className="skeleton h-11 rounded" />)}</div>}

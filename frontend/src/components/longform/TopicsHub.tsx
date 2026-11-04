@@ -6,13 +6,41 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowRight, ChevronDown, ExternalLink, Lightbulb, Loader2, RefreshCw, Search, Trash2, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '@/components/AuthProvider'
+import VoicePicker from '@/components/longform/VoicePicker'
 import {
   createTopicProject, deleteTopicProject, getRecommendedIdeas, getTopicIdeas, listTopicProjects, saveLongformBrand,
 } from '@/lib/api'
 import { formatSpan } from '@/lib/clip-meta'
-import type { TopicIdea, TopicProjectSummary } from '@/lib/types'
+import type { LongformData, TopicFit, TopicIdea, TopicProjectSummary, VideoFormat } from '@/lib/types'
 
 const DURATIONS = [5, 8, 12]
+const SHORT_SECONDS = [30, 45, 60]
+const projectHref = (id: string) => `/proyek-video/${id}`
+const VOICE_KEY = 'klik-voice'
+
+function rememberedVoice(): string {
+  try {
+    return localStorage.getItem(VOICE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function rememberVoice(voice: string) {
+  try {
+    localStorage.setItem(VOICE_KEY, voice)
+  } catch {
+    // Pilihan suara hanya tidak diingat di kunjungan berikutnya
+  }
+}
+
+const FIT_LABEL: Record<TopicFit, string> = { short: 'cocok video pendek', long: 'cocok video panjang', both: 'cocok keduanya' }
+const TABS: { id: VideoFormat; label: string; hint: string; own: string }[] = [
+  { id: 'long', label: 'Video panjang', hint: '16:9, 5 sampai 12 menit, ada bab dan thumbnail.', own: 'Mis. Dampak PHK massal ke ekonomi keluarga' },
+  { id: 'short', label: 'Video pendek', hint: '9:16, maksimal 60 detik, untuk TikTok, Shorts, dan Reels.', own: 'Mis. Gaji naik tapi tabungan tetap segitu' },
+]
+
+const fitsTab = (idea: TopicIdea, tab: VideoFormat) => idea.fit === 'both' || idea.fit === tab
 
 function ago(epochSeconds: number): string {
   const minutes = Math.max(0, Math.round((Date.now() / 1000 - epochSeconds) / 60))
@@ -21,11 +49,11 @@ function ago(epochSeconds: number): string {
   return `${Math.round(minutes / 60)} jam lalu`
 }
 
-/** Tab video panjang dari topik/isu trending (khusus admin): pilih rekomendasi → editor. */
+/** Proyek video channel (khusus admin): pilih topik, Generate sekali, lalu sesuaikan di studio sebelum render. */
 export default function TopicsHub() {
   const { me } = useAuth()
   if (me && !me.is_admin) {
-    return <p role="alert" className="pt-16 border-l-2 border-tally pl-4 text-sm text-ink-muted">Fitur video panjang khusus admin.</p>
+    return <p role="alert" className="pt-16 border-l-2 border-tally pl-4 text-sm text-ink-muted">Fitur ini khusus admin.</p>
   }
   return <Hub />
 }
@@ -42,10 +70,12 @@ function IdeaCard({ idea, project, creating, disabled, onPick }: IdeaCardProps) 
   const [showSources, setShowSources] = useState(false)
   const [first, ...rest] = idea.sources
   return (
-    <li className="flex flex-col rounded-lg border border-rule glass p-4">
-      <p className="font-semibold leading-snug text-ink">{idea.title}</p>
+    <li className="flex min-w-0 flex-col rounded-lg border border-rule glass p-4">
+      <p className="text-xs font-semibold text-teal">{idea.pillar ? `${idea.pillar}, ` : ''}{FIT_LABEL[idea.fit]}</p>
+      <p className="mt-1 font-semibold leading-snug text-ink">{idea.title}</p>
       <p className="mt-1.5 text-sm leading-relaxed text-ink/90">{idea.angle}</p>
       <p className="mt-2 flex gap-1.5 text-xs text-ink-muted"><Lightbulb className="mt-px size-3.5 shrink-0 text-signal" aria-hidden />{idea.why}</p>
+      {idea.fit_reason && <p className="mt-1.5 text-xs text-ink-muted">{idea.fit_reason}</p>}
 
       {first && (
         <div className="mt-3 text-xs">
@@ -55,7 +85,7 @@ function IdeaCard({ idea, project, creating, disabled, onPick }: IdeaCardProps) 
           </a>
           {rest.length > 0 && (
             <>
-              <button type="button" onClick={() => setShowSources(v => !v)} className="mt-1 text-ink-faint hover:text-ink-muted">
+              <button type="button" onClick={() => setShowSources(v => !v)} className="mt-1 min-h-11 text-ink-faint hover:text-ink-muted">
                 {showSources ? 'Sembunyikan sumber' : `+${rest.length} sumber lain`}
               </button>
               {showSources && rest.map(src => (
@@ -71,14 +101,14 @@ function IdeaCard({ idea, project, creating, disabled, onPick }: IdeaCardProps) 
 
       <div className="mt-auto pt-4">
         {project ? (
-          <Link href={`/longform/${project.id}`} className="btn btn-sm btn-quiet w-full justify-center">
+          <Link href={projectHref(project.id)} className="btn btn-sm btn-quiet min-h-11 w-full justify-center">
             Sudah jadi proyek, buka <ArrowRight className="size-3.5" aria-hidden />
           </Link>
         ) : (
-          <button type="button" onClick={onPick} disabled={disabled} className="btn btn-sm btn-primary w-full justify-center">
+          <button type="button" onClick={onPick} disabled={disabled} className="btn btn-sm btn-primary min-h-11 w-full justify-center">
             {creating
               ? <><Loader2 className="size-3.5 animate-spin" aria-hidden /> Menulis naskah… (±30 dtk)</>
-              : <><Wand2 className="size-3.5" aria-hidden /> Pilih topik ini</>}
+              : <><Wand2 className="size-3.5" aria-hidden /> Generate video</>}
           </button>
         )}
       </div>
@@ -100,6 +130,10 @@ function IdeaSkeleton() {
 function Hub() {
   const router = useRouter()
   const params = useSearchParams()
+  // Tab tersimpan di alamat, supaya tombol kembali dari studio membuka tab yang sama
+  const format: VideoFormat = params.get('tab') === 'short' ? 'short' : 'long'
+  const tab = TABS.find(item => item.id === format) ?? TABS[0]
+  const isShort = format === 'short'
   // Dari Ruang kerja dengan kata kunci: langsung cari topik itu
   const initialQuery = params.get('q')?.trim() ?? ''
   const [recommended, setRecommended] = useState<{ ideas: TopicIdea[]; generated_at: number; niche: string[] } | null>(null)
@@ -109,17 +143,24 @@ function Hub() {
   const [results, setResults] = useState<TopicIdea[] | null>(null)
   const [searching, setSearching] = useState(!!initialQuery)
   const [minutes, setMinutes] = useState(8)
+  const [seconds, setSeconds] = useState(30)
   const [creating, setCreating] = useState<string | null>(null)
   const [ownTitle, setOwnTitle] = useState('')
   const [ownAngle, setOwnAngle] = useState('')
   const [projects, setProjects] = useState<TopicProjectSummary[] | null>(null)
   // Nama channel untuk sapaan pembuka & penutup naskah (tersimpan di server sebagai brand)
   const [channel, setChannel] = useState<string | null>(null)
+  const [voices, setVoices] = useState<LongformData['voices']>([])
+  const [voice, setVoice] = useState('')
 
   const loadProjects = useCallback(() => {
     listTopicProjects().then(res => {
       setProjects(res.projects)
       setChannel(prev => prev ?? res.brand.channel)
+      const options = res.voices ?? []
+      setVoices(options)
+      const saved = rememberedVoice()
+      setVoice(prev => prev || (options.some(v => v.id === saved) ? saved : res.default_voice ?? ''))
     }).catch(() => setProjects([]))
   }, [])
   useEffect(loadProjects, [loadProjects])
@@ -167,9 +208,9 @@ function Hub() {
   const create = async (key: string, title: string, angle: string, sources: TopicIdea['sources']) => {
     setCreating(key)
     try {
-      const res = await createTopicProject({ title, angle, sources, minutes, channel: channel ?? '' })
-      toast.success('Naskah siap. Periksa dan edit sebelum membuat suara.')
-      router.push(`/longform/${res.id}`)
+      const res = await createTopicProject({ title, angle, sources, minutes, channel: channel ?? '', format, auto: true, voice, ...(isShort ? { seconds } : {}) })
+      toast.success('Naskah siap. Suara, visual, dan thumbnail sedang dibuat.')
+      router.push(projectHref(res.id))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Naskah gagal dibuat.')
       setCreating(null)
@@ -187,23 +228,44 @@ function Hub() {
   }
 
   const busy = creating !== null
-  const projectFor = (idea: TopicIdea) => projects?.find(p => p.topic === idea.title)
-  const cards = (list: TopicIdea[], prefix: string) => (
-    <ul className="mt-4 grid gap-4 md:grid-cols-2">
-      {list.map((idea, i) => (
-        <IdeaCard key={`${prefix}-${i}-${idea.title}`} idea={idea} project={projectFor(idea)} creating={creating === `${prefix}-${i}`}
-          disabled={busy} onPick={() => create(`${prefix}-${i}`, idea.title, idea.angle, idea.sources)} />
-      ))}
-    </ul>
-  )
+  const ownProjects = projects?.filter(p => p.format === format) ?? null
+  const projectFor = (idea: TopicIdea) => ownProjects?.find(p => p.topic === idea.title)
+  const cards = (list: TopicIdea[], prefix: string) => {
+    const shown = list.filter(idea => fitsTab(idea, format))
+    if (!shown.length) {
+      return (
+        <p className="mt-4 rounded-lg border border-rule glass p-5 text-sm text-ink-muted">
+          Belum ada topik yang cocok untuk {tab.label.toLowerCase()}. Klik Ganti untuk mencari rekomendasi baru, atau tulis topik sendiri di bawah.
+        </p>
+      )
+    }
+    return (
+      <ul className="mt-4 grid grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
+        {shown.map((idea, i) => (
+          <IdeaCard key={`${prefix}-${i}-${idea.title}`} idea={idea} project={projectFor(idea)} creating={creating === `${prefix}-${i}`}
+            disabled={busy} onPick={() => create(`${prefix}-${i}`, idea.title, idea.angle, idea.sources)} />
+        ))}
+      </ul>
+    )
+  }
 
   return (
     <div className="pt-10 pb-24">
-      <h1 className="type-display text-4xl text-ink">Video panjang</h1>
+      <h1 className="type-display text-4xl text-ink">Proyek video</h1>
       <p className="mt-2 max-w-[68ch] text-ink-muted">
-        Pilih topik yang sedang ramai, naskahnya langsung ditulis dari berita sumbernya. Setelah itu tinggal buat suara,
-        pilih visual, dan render video 16:9 tanpa wajah.
+        Pilih topik lalu klik Generate. Naskah, suara, animasi, visual, dan thumbnail dibuat sekaligus. Kamu tinggal sesuaikan, lalu render.
       </p>
+
+      <div role="tablist" aria-label="Format video" className="mt-6 inline-flex max-w-full rounded-md border border-rule p-0.5">
+        {TABS.map(item => (
+          <button key={item.id} type="button" role="tab" aria-selected={format === item.id} disabled={busy}
+            onClick={() => router.replace(item.id === 'short' ? '/proyek-video?tab=short' : '/proyek-video', { scroll: false })}
+            className={`min-h-11 rounded-[5px] px-4 font-semibold ${format === item.id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-sm text-ink-muted">{tab.hint}</p>
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_19rem] items-start">
         <div className="min-w-0 space-y-8">
@@ -215,21 +277,23 @@ function Hub() {
                   {recommended
                     ? <>Dari berita 7 hari terakhir{recommended.niche.length ? ` untuk ${recommended.niche.join(', ')}` : ''}. Diperbarui {ago(recommended.generated_at)}.</>
                     : 'Membaca berita terbaru dan Google Trends Indonesia…'}
-                  {recommended && !recommended.niche.length && (
-                    <> <Link href="/pengaturan" className="text-ink underline underline-offset-4">Atur niche</Link> agar lebih sesuai channelmu.</>
-                  )}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <div role="radiogroup" aria-label="Durasi video" className="inline-flex rounded-md border border-rule p-0.5 text-sm">
-                  {DURATIONS.map(m => (
+                  {isShort ? SHORT_SECONDS.map(s => (
+                    <button key={s} type="button" role="radio" aria-checked={seconds === s} onClick={() => setSeconds(s)}
+                      className={`min-h-11 rounded-[5px] px-3 ${seconds === s ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
+                      ±{s} dtk
+                    </button>
+                  )) : DURATIONS.map(m => (
                     <button key={m} type="button" role="radio" aria-checked={minutes === m} onClick={() => setMinutes(m)}
-                      className={`h-8 rounded-[5px] px-3 ${minutes === m ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
+                      className={`min-h-11 rounded-[5px] px-3 ${minutes === m ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
                       ±{m} mnt
                     </button>
                   ))}
                 </div>
-                <button type="button" onClick={refresh} disabled={refreshing || !recommended || busy} className="btn btn-sm btn-quiet"
+                <button type="button" onClick={refresh} disabled={refreshing || !recommended || busy} className="btn btn-sm btn-quiet min-h-11"
                   title="Cari rekomendasi baru dari berita terkini">
                   <RefreshCw className={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} aria-hidden /> Ganti
                 </button>
@@ -241,7 +305,7 @@ function Hub() {
                 {recError} <button type="button" onClick={refresh} className="text-ink underline underline-offset-4">Coba lagi</button>
               </div>
             ) : !recommended || refreshing ? (
-              <ul className="mt-4 grid gap-4 md:grid-cols-2">
+              <ul className="mt-4 grid grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">
                 {Array.from({ length: 4 }, (_, i) => <IdeaSkeleton key={i} />)}
               </ul>
             ) : cards(recommended.ideas, 'rec')}
@@ -266,7 +330,7 @@ function Hub() {
                   </button>
                 </form>
                 {searching && !results && (
-                  <ul className="mt-4 grid gap-4 md:grid-cols-2">{Array.from({ length: 2 }, (_, i) => <IdeaSkeleton key={i} />)}</ul>
+                  <ul className="mt-4 grid grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2">{Array.from({ length: 2 }, (_, i) => <IdeaSkeleton key={i} />)}</ul>
                 )}
                 {results && cards(results, 'cari')}
               </div>
@@ -275,14 +339,14 @@ function Hub() {
                 <p className="text-sm font-semibold text-ink">Tulis topik sendiri</p>
                 <p className="mt-0.5 text-xs text-ink-muted">Berita terbaru tentang topik ini dicari otomatis sebagai sumber fakta.</p>
                 <input value={ownTitle} maxLength={200} onChange={e => setOwnTitle(e.target.value)} aria-label="Topik"
-                  placeholder="Mis. Dampak PHK massal ke ekonomi keluarga"
+                  placeholder={tab.own}
                   className="mt-3 h-10 w-full rounded-md border border-rule bg-bay px-3 text-ink focus:border-signal focus:outline-none" />
                 <textarea value={ownAngle} maxLength={400} onChange={e => setOwnAngle(e.target.value)} aria-label="Sudut pandang"
                   placeholder="Sudut pandang (opsional), mis. apa yang bisa dilakukan pekerja muda"
                   className="field-sizing-content mt-2 min-h-14 w-full resize-none rounded-md border border-rule bg-bay px-3 py-2 text-sm text-ink focus:border-signal focus:outline-none" />
                 <button type="button" onClick={() => create('own', ownTitle.trim(), ownAngle.trim(), [])} disabled={busy || !ownTitle.trim()}
                   className="btn btn-primary mt-3">
-                  {creating === 'own' ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Mencari berita & menulis…</> : <><Wand2 className="size-4" aria-hidden /> Buat naskah</>}
+                  {creating === 'own' ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Mencari berita & menulis…</> : <><Wand2 className="size-4" aria-hidden /> Generate video</>}
                 </button>
               </div>
             </div>
@@ -290,9 +354,16 @@ function Hub() {
         </div>
 
         <aside className="space-y-4 lg:sticky lg:top-20">
+          {voices.length > 0 && (
+            <section className="rounded-lg border border-rule glass p-4">
+              <h2 className="font-semibold text-ink">Pilih suara dulu</h2>
+              <p className="mt-1 mb-3 text-sm text-ink-muted">Dengarkan contohnya, lalu Generate memakai suara ini.</p>
+              <VoicePicker voices={voices} value={voice} disabled={busy} onChange={next => { setVoice(next); rememberVoice(next) }} />
+            </section>
+          )}
           <section className="rounded-lg border border-rule glass p-4">
             <label htmlFor="channel-name" className="font-semibold text-ink">Nama channel</label>
-            <input id="channel-name" value={channel ?? ''} maxLength={40} placeholder="Mis. Klik Digital"
+            <input id="channel-name" value={channel ?? ''} maxLength={40} placeholder="Mis. Klik Digital ID"
               onChange={e => setChannel(e.target.value)}
               onBlur={() => { saveLongformBrand({ channel: channel ?? '' }).catch(() => {}) }}
               className="mt-2 h-9 w-full rounded-md border border-rule bg-bay px-2 text-sm text-ink focus:border-signal focus:outline-none" />
@@ -300,31 +371,33 @@ function Hub() {
           </section>
           <section className="rounded-lg border border-rule glass p-4">
             <h2 className="font-semibold text-ink">Proyekmu</h2>
-            {projects === null ? (
+            {ownProjects === null ? (
               <p className="mt-2 flex items-center gap-2 text-sm text-ink-muted"><Loader2 className="size-4 animate-spin" aria-hidden /> Memuat…</p>
-            ) : projects.length === 0 ? (
-              <p className="mt-1 text-sm text-ink-muted">Belum ada. Pilih salah satu rekomendasi untuk memulai.</p>
+            ) : ownProjects.length === 0 ? (
+              <p className="mt-1 text-sm text-ink-muted">Belum ada {tab.label.toLowerCase()}. Pilih topik untuk memulai.</p>
             ) : (
               <ul className="mt-2 divide-y divide-rule">
-                {projects.map(p => (
+                {ownProjects.map(p => (
                   <li key={p.id} className="flex items-start gap-2 py-2.5">
-                    <Link href={`/longform/${p.id}`} className="min-w-0 flex-1 group">
+                    <Link href={projectHref(p.id)} className="min-w-0 flex-1 group">
                       <span className="block text-sm font-semibold leading-snug text-ink group-hover:underline line-clamp-2">{p.title || p.topic}</span>
                       <span className="mt-0.5 block text-xs text-ink-muted">
                         {p.rendered_at ? <span className="text-teal">Dirender{p.duration ? `, ${formatSpan(p.duration)}` : ''}</span> : `${p.scenes} adegan, belum dirender`}
                       </span>
                     </Link>
-                    <button type="button" onClick={() => remove(p)} aria-label={`Hapus proyek ${p.title}`} className="btn btn-sm btn-quiet px-1.5 hover:text-tally">
+                    <button type="button" onClick={() => remove(p)} aria-label={`Hapus proyek ${p.title}`} className="btn btn-sm btn-quiet min-h-11 min-w-11 justify-center px-1.5 hover:text-tally">
                       <Trash2 className="size-3.5" aria-hidden />
                     </button>
                   </li>
                 ))}
               </ul>
             )}
-            <p className="mt-3 border-t border-rule pt-3 text-xs text-ink-faint">
-              Dari podcast? Buka video yang sudah dianalisis di <Link href="/admin" className="underline underline-offset-4">Ruang kerja</Link>,
-              lalu pilih <span className="text-ink-muted">Jadikan video panjang</span>.
-            </p>
+            {!isShort && (
+              <p className="mt-3 border-t border-rule pt-3 text-xs text-ink-faint">
+                Dari podcast? Buka video yang sudah dianalisis di <Link href="/admin" className="underline underline-offset-4">Ruang kerja</Link>,
+                lalu pilih <span className="text-ink-muted">Jadikan video panjang</span>.
+              </p>
+            )}
           </section>
         </aside>
       </div>

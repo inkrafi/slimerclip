@@ -156,7 +156,7 @@ function TopicForm() {
   const go = (e: React.FormEvent) => {
     e.preventDefault()
     const q = query.trim()
-    router.push(q ? `/longform?q=${encodeURIComponent(q)}` : '/longform')
+    router.push(q ? `/proyek-video?q=${encodeURIComponent(q)}` : '/proyek-video')
   }
   return (
     <form onSubmit={go}>

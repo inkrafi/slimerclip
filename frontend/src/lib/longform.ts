@@ -10,8 +10,8 @@ export const sameVisual = (a?: StockVisual | null, b?: StockVisual | null) => !!
 // Sama dengan backend/longform.py
 const WORDS_PER_MINUTE = 115
 
-/** Halaman editor video panjang: proyek topik di /longform/<id>, proyek podcast di /video/<id>/longform */
-export const studioHref = (key: string) => (key.startsWith('topic_') ? `/longform/${key}` : `/video/${key}/longform`)
+/** Halaman editor: proyek topik di /proyek-video/<id>, proyek podcast di /video/<id>/longform */
+export const studioHref = (key: string) => (key.startsWith('topic_') ? `/proyek-video/${key}` : `/video/${key}/longform`)
 
 /** Perkiraan durasi narasi sebelum suaranya dibuat */
 export function narrationSeconds(text: string): number {

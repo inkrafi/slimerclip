@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ImageIcon, Mic, Plus, Square, Trash2, Upload, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ImageIcon, Mic, Plus, Square, Trash2, Upload, Wand2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import MotionFields from '@/components/longform/MotionFields'
 import StockPicker from '@/components/longform/StockPicker'
@@ -18,6 +18,12 @@ interface Props {
   locked: boolean
   working: boolean
   stockProvider: StockProvider | null
+  /** Video pendek tidak punya bab */
+  hideChapter?: boolean
+  /** Video channel: semua bentuk animasi layar penuh tersedia */
+  fullMotion?: boolean
+  /** Video channel: buat suara adegan ini dengan AI */
+  onTts?: () => void
   onChange: (patch: Partial<LongformScene>) => void
   onMove: (dir: -1 | 1) => void
   onRemove: () => void
@@ -28,7 +34,7 @@ interface Props {
 
 const STATE_LABEL = {
   ready: { text: 'Suara siap', cls: 'text-teal' },
-  stale: { text: 'Teks berubah, rekam ulang suaranya', cls: 'text-signal' },
+  stale: { text: 'Teks atau suara berubah, buat ulang suaranya', cls: 'text-signal' },
   missing: { text: 'Belum ada suara', cls: 'text-ink-faint' },
 } as const
 
@@ -62,15 +68,17 @@ export default function SceneCard(props: Props) {
         <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${quote ? 'bg-label-iris/15 text-label-iris' : 'bg-raised text-ink-muted'}`}>
           {quote ? 'Kutipan' : 'Narasi'}
         </span>
-        <input
-          value={scene.chapter}
-          maxLength={70}
-          disabled={locked}
-          onChange={e => props.onChange({ chapter: e.target.value })}
-          placeholder="Judul bab (isi jika adegan ini membuka bab baru)"
-          aria-label={`Judul bab adegan ${index + 1}`}
-          className={`h-8 min-w-0 flex-1 rounded-md border bg-transparent px-2 text-sm focus:border-signal focus:outline-none ${scene.chapter ? 'border-rule font-semibold text-ink' : 'border-transparent text-ink-muted hover:border-rule'}`}
-        />
+        {props.hideChapter ? <span className="flex-1" /> : (
+          <input
+            value={scene.chapter}
+            maxLength={70}
+            disabled={locked}
+            onChange={e => props.onChange({ chapter: e.target.value })}
+            placeholder="Judul bab (isi jika adegan ini membuka bab baru)"
+            aria-label={`Judul bab adegan ${index + 1}`}
+            className={`h-8 min-w-0 flex-1 rounded-md border bg-transparent px-2 text-sm focus:border-signal focus:outline-none ${scene.chapter ? 'border-rule font-semibold text-ink' : 'border-transparent text-ink-muted hover:border-rule'}`}
+          />
+        )}
         <span className="flex">
           <button type="button" onClick={() => props.onMove(-1)} disabled={locked || index === 0} aria-label="Naikkan adegan" className="btn btn-sm btn-quiet px-1.5"><ArrowUp className="size-3.5" aria-hidden /></button>
           <button type="button" onClick={() => props.onMove(1)} disabled={locked || index === total - 1} aria-label="Turunkan adegan" className="btn btn-sm btn-quiet px-1.5"><ArrowDown className="size-3.5" aria-hidden /></button>
@@ -107,6 +115,11 @@ export default function SceneCard(props: Props) {
                 <audio controls preload="none" src={scene.audio.url} className="h-8 max-w-[15rem]" aria-label={`Suara adegan ${index + 1}`} />
               )}
               <span className="ml-auto flex flex-wrap gap-1.5">
+                {props.onTts && (
+                  <button type="button" onClick={props.onTts} disabled={busy || recorder.recording} className="btn btn-sm btn-quiet">
+                    <Wand2 className="size-3.5" aria-hidden /> Suara AI
+                  </button>
+                )}
                 <button type="button" onClick={toggleRecord} disabled={busy && !recorder.recording}
                   className={`btn btn-sm ${recorder.recording ? 'bg-tally/15 text-tally' : 'btn-quiet'}`}>
                   {recorder.recording
@@ -129,7 +142,7 @@ export default function SceneCard(props: Props) {
                 e.target.value = ''
               }} />
             </div>
-            <MotionFields motion={scene.motion} disabled={locked} onChange={motion => props.onChange({ motion })} />
+            <MotionFields motion={scene.motion} disabled={locked} full={props.fullMotion} onChange={motion => props.onChange({ motion })} />
           </div>
 
           <div>

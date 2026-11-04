@@ -1,7 +1,7 @@
 import type { CinematicBeat, CinematicScene } from '@/lib/types'
-import type { MotionProject, MotionProjectInput } from '@/lib/types'
+import type { MotionBrief, MotionProject, MotionProjectInput } from '@/lib/types'
 import {
-  AnalysisResult, ClientPreset, PerformanceClient, PerformanceReport, PublicReview, ReviewDecision, ReviewLink, ReviewPublishLink, ReviewSummary, ClipGenerateOptions, ClipProfile, ClipProfileOptions, ClipThumbnail, EditRecipe, EditTemplate, EditorAsset, EditorData, LongformBrand, LongformData, LongformProject, Me, TopicIdea, TopicProjectSummary, NicheSetting, RenderJob, StockVisual, RenderOptions, RenderedClip, Segment,
+  AnalysisResult, ClientPreset, PerformanceClient, PerformanceReport, PublicReview, ReviewDecision, ReviewLink, ReviewPublishLink, ReviewSummary, ClipGenerateOptions, ClipProfile, ClipProfileOptions, ClipThumbnail, EditRecipe, EditTemplate, EditorAsset, EditorData, LongformBrand, LongformData, LongformProject, Me, TopicIdea, TopicProjectSummary, VideoFormat, NicheSetting, RenderJob, StockVisual, RenderOptions, RenderedClip, Segment,
   TranscriptSegment, UploadedFileInfo, VideoDetail, VideoSummary,
 } from '@/lib/types'
 import { accessToken } from '@/lib/supabase'
@@ -167,8 +167,8 @@ const json = (method: string, body?: unknown): RequestInit => ({
 
 export const getLongform = (videoId: string) => request<LongformData>(longformPath(videoId))
 
-export const createLongformScript = (videoId: string, minutes: number, focus: string, channel: string) =>
-  request<LongformData>(`${longformPath(videoId)}/script`, json('POST', { minutes, focus, channel }))
+export const createLongformScript = (videoId: string, minutes: number, focus: string, channel: string, seconds?: number) =>
+  request<LongformData>(`${longformPath(videoId)}/script`, json('POST', { minutes, focus, channel, seconds }))
 
 export const createLongformThumbnail = (videoId: string, body: { text: string; style: string; accent: string; scene_id: string }) =>
   request<LongformData>(`${longformPath(videoId)}/thumbnail`, json('POST', body))
@@ -194,6 +194,10 @@ export const uploadLongformRecording = (videoId: string, sceneId: string, audio:
   return request<LongformData>(`${longformPath(videoId)}/scenes/${encodeURIComponent(sceneId)}/recording`, { method: 'POST', body: form })
 }
 
+/** Lengkapi visual, suara, dan thumbnail yang belum ada. Tidak merender. */
+export const prepareTopicProject = (id: string) =>
+  request<LongformData>(`/longform/topics/${encodeURIComponent(id)}/prepare`, { method: 'POST' })
+
 export const deleteLongformAudio = (videoId: string, sceneId: string) =>
   request<LongformData>(`${longformPath(videoId)}/scenes/${encodeURIComponent(sceneId)}/audio`, { method: 'DELETE' })
 
@@ -213,9 +217,13 @@ export const getTopicIdeas = (query: string, useNiche: boolean) =>
 export const getRecommendedIdeas = (refresh = false) =>
   request<{ ideas: TopicIdea[]; generated_at: number; niche: string[] }>(`/longform/ideas/recommended${refresh ? '?refresh=1' : ''}`)
 
-export const listTopicProjects = () => request<{ projects: TopicProjectSummary[]; brand: LongformBrand }>('/longform/topics')
+export const listTopicProjects = () => request<{ projects: TopicProjectSummary[]; brand: LongformBrand; voices?: LongformData['voices']; default_voice?: string }>('/longform/topics')
 
-export const createTopicProject = (body: { title: string; angle: string; sources: TopicIdea['sources']; minutes: number; channel: string }) =>
+/** Contoh satu suara sebagai data URI; disimpan server per suara */
+export const getVoicePreview = (voice: string) =>
+  request<{ audio: string }>('/longform/voice-preview', json('POST', { voice })).then(r => r.audio)
+
+export const createTopicProject = (body: { title: string; angle: string; sources: TopicIdea['sources']; minutes: number; channel: string; format: VideoFormat; seconds?: number; auto?: boolean; voice?: string }) =>
   request<LongformData & { id: string }>('/longform/topics', json('POST', body))
 
 export const deleteTopicProject = (id: string) =>
@@ -418,6 +426,11 @@ export const createMotionProject = (body: MotionProjectInput) =>
 
 export const updateMotionProject = (id: string, body: MotionProjectInput) =>
   request<{ project: MotionProject }>(`/motion-projects/${encodeURIComponent(id)}`, { method: 'PUT', ...motionBody(body) }).then(r => r.project)
+
+export const saveMotionBrief = (id: string, product: string, brief: MotionBrief) =>
+  request<{ project: MotionProject }>(`/motion-projects/${encodeURIComponent(id)}/brief`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ product, brief }),
+  }).then(r => r.project)
 
 export const deleteMotionProject = (id: string) =>
   request<{ message: string }>(`/motion-projects/${encodeURIComponent(id)}`, { method: 'DELETE' })

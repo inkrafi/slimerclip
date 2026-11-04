@@ -22,6 +22,7 @@ from email.utils import parsedate_to_datetime
 import requests
 
 import longform
+import klik_render
 
 TOPIC_PREFIX = "topic_"
 TOPIC_ID_RE = re.compile(r"^topic_[0-9a-f]{12}$")
@@ -31,6 +32,14 @@ FEED_TTL = 30 * 60           # RSS di-cache 30 menit
 ARTICLE_MAX_BYTES = 3 * 1024 * 1024
 ARTICLE_CHARS = 5000         # isi artikel yang dikirim ke Gemini (per sumber)
 MAX_SOURCES = 5
+NEWS_DAYS = 8
+# Niche channel Klik Digital ID: teknologi, karier, dan uang. Dipisah dari niche akun, yang dipakai menyaring momen podcast klien.
+CHANNEL_NICHE = ("teknologi", "karier", "keuangan")
+# Berita ramai umum (Google Trends) sengaja tidak dipakai di sini, karena kebanyakan di luar niche
+CHANNEL_QUERIES = ("AI pekerjaan teknologi", "aplikasi teknologi Indonesia", "PHK lowongan kerja", "gaji pekerja UMP",
+                   "keuangan pribadi tabungan", "paylater pinjol utang", "harga kebutuhan inflasi")
+FITS = ("short", "long", "both")
+PILLARS = {"teknologi": "Teknologi", "karier": "Karier", "uang": "Uang"}
 
 # Kata kunci pencarian berita per kategori niche (backend/niche.py)
 NICHE_QUERIES = {
@@ -123,6 +132,13 @@ def _date(value: str) -> str:
         return ""
 
 
+def _recent(date: str) -> bool:
+    """Berita 7 hari terakhir, ditambah satu hari untuk selisih zona waktu. Tanpa tanggal tetap dipakai."""
+    if not date:
+        return True
+    return date >= time.strftime("%Y-%m-%d", time.gmtime(time.time() - NEWS_DAYS * 86400))
+
+
 def google_trends() -> list:
     """Pencarian yang sedang naik di Indonesia, masing-masing dengan berita terkaitnya."""
     def fetch():
@@ -150,25 +166,28 @@ def search_news(query: str, limit: int = 8) -> list:
 
     def fetch():
         res = requests.get("https://www.bing.com/news/search", headers=UA, timeout=15, params={
-            "q": query, "format": "rss", "setlang": "id", "cc": "ID", "qft": 'interval="8"'})
+            "q": query, "format": "rss", "setlang": "id", "cc": "ID"})
         res.raise_for_status()
         out = []
         for item in re.findall(r"<item>(.*?)</item>", res.text, re.S):
             link = _tag(item, "link")
             url = safe_url(urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("url", [link])[0])
-            if url:
+            date = _date(_tag(item, "pubDate"))
+            # Saring di sini: filter tanggal di URL Bing (qft) kini mengembalikan hasil kosong
+            if url and _recent(date):
                 out.append({"title": _tag(item, "title"), "url": url, "source": _tag(item, "News:Source"),
-                            "date": _date(_tag(item, "pubDate")), "snippet": _tag(item, "description")[:300]})
+                            "date": date, "snippet": _tag(item, "description")[:300]})
         return out[:limit]
     return _cached(f"news|{query.lower()}|{limit}", fetch)
 
 
 def gather_headlines(query: str, niche_topics: list) -> list:
     """Bahan ide: berita untuk kata kunci (atau tiap topik niche) + Google Trends, tanpa duplikat."""
-    searches = [query] if query else [NICHE_QUERIES[t] for t in niche_topics if t in NICHE_QUERIES][:5]
+    channel = not query and tuple(niche_topics) == CHANNEL_NICHE
+    searches = [query] if query else list(CHANNEL_QUERIES) if channel else [NICHE_QUERIES[t] for t in niche_topics if t in NICHE_QUERIES][:5]
     if not searches:
         searches = ["bisnis", "investasi", "teknologi AI", "ekonomi Indonesia"]
-    jobs = [(search_news, q) for q in searches] + ([] if query else [(lambda _: google_trends(), None)])
+    jobs = [(search_news, q) for q in searches] + ([] if query or channel else [(lambda _: google_trends(), None)])
     with ThreadPoolExecutor(max_workers=6) as pool:
         batches = list(pool.map(lambda job: _quiet(job[0], job[1]), jobs))
     seen, out = set(), []
@@ -191,9 +210,11 @@ def _quiet(fn, arg) -> list:
 # ── Ide (Gemini) ─────────────────────────────────────────────
 
 IDEAS_PROMPT = """
-Kamu produser konten YouTube edukasi "faceless" untuk audiens Indonesia.
-Dari daftar berita terbaru di bawah, usulkan 6 ide video panjang (5-12 menit) yang paling berpotensi ditonton,
-cocok untuk niche: {NICHE}.
+Kamu produser konten edukasi "faceless" untuk audiens Indonesia (YouTube, TikTok, Reels).
+Dari daftar berita terbaru di bawah, usulkan 8 ide video yang paling berpotensi ditonton,
+untuk channel tentang teknologi, karier, dan uang pribadi. Fokus kata kunci: {NICHE}.
+Lewati berita yang tidak menyentuh pekerjaan, penghasilan, pengeluaran, atau teknologi yang dipakai sehari-hari,
+seperti olahraga, kriminal, politik, dan selebriti. Lebih baik 4 ide yang pas daripada 8 ide yang dipaksakan.
 
 ATURAN
 - Setiap ide berangkat dari isu nyata di daftar berita; sebutkan nomor berita sumbernya di "source_ids" (1-4 nomor).
@@ -202,17 +223,26 @@ ATURAN
 - title: judul YouTube maks 70 karakter, gaya rasa penasaran, tanpa emoji, tanpa clickbait palsu.
 - angle: 1-2 kalimat sudut pandang/isi video.
 - why: 1 kalimat kenapa topik ini sedang ramai / relevan sekarang.
+- pillar: "teknologi", "karier", atau "uang". Pakai "lainnya" kalau tidak benar-benar masuk salah satunya.
+- fit: format yang paling cocok, salah satu dari:
+  "short" = satu ide, satu angka, atau satu kejutan yang tuntas dalam 60 detik, tanpa perlu banyak konteks.
+  "long" = butuh penjelasan sebab-akibat, beberapa sumber atau data, dan masih relevan berbulan-bulan (5-12 menit).
+  "both" = pembahasan utuhnya layak jadi video panjang, dan ada satu bagian yang berdiri sendiri sebagai video pendek.
+  Usahakan minimal 2 ide "short" dan 2 ide "long". Jangan semua "both".
+- fit_reason: 1 kalimat pendek alasan format itu.
 - Hindari gosip pribadi, SARA, dan tuduhan kriminal terhadap orang tertentu.
 
-Kembalikan HANYA JSON: {"ideas": [{"title": "...", "angle": "...", "why": "...", "source_ids": [1, 2]}]}
+Kembalikan HANYA JSON: {"ideas": [{"title": "...", "angle": "...", "why": "...", "pillar": "uang", "fit": "short", "fit_reason": "...", "source_ids": [1, 2]}]}
 """
 
 
 def ideas_schema() -> dict:
     text = {"type": "string"}
     idea = {"type": "object",
-            "properties": {"title": text, "angle": text, "why": text, "source_ids": {"type": "array", "items": {"type": "integer"}}},
-            "required": ["title", "angle", "why", "source_ids"]}
+            "properties": {"title": text, "angle": text, "why": text, "fit": {"type": "string", "enum": list(FITS)}, "fit_reason": text,
+                           "pillar": {"type": "string", "enum": [*PILLARS, "lainnya"]},
+                           "source_ids": {"type": "array", "items": {"type": "integer"}}},
+            "required": ["title", "angle", "why", "pillar", "fit", "fit_reason", "source_ids"]}
     return {"type": "object", "properties": {"ideas": {"type": "array", "items": idea, "minItems": 3}}, "required": ["ideas"]}
 
 
@@ -234,9 +264,11 @@ def generate_ideas(headlines: list, niche_text: str, api_key: str | None = None)
         ids = [i for i in idea.get("source_ids") or [] if isinstance(i, int) and 1 <= i <= len(headlines)]
         sources = [_source(headlines[i - 1]) for i in dict.fromkeys(ids)][:MAX_SOURCES]
         title = longform._clean(idea.get("title"), 100)
-        if title and sources:
+        if title and sources and idea.get("pillar") != "lainnya":
             ideas.append({"title": title, "angle": longform._clean(idea.get("angle"), 400),
-                          "why": longform._clean(idea.get("why"), 300), "sources": sources})
+                          "why": longform._clean(idea.get("why"), 300), "fit": idea.get("fit") if idea.get("fit") in FITS else "both",
+                          "fit_reason": longform._clean(idea.get("fit_reason"), 160),
+                          "pillar": PILLARS.get(idea.get("pillar"), ""), "sources": sources})
     if not ideas:
         raise ValueError("AI tidak menemukan ide yang cocok. Coba kata kunci lain.")
     return ideas[:8]
@@ -310,8 +342,62 @@ Kembalikan HANYA JSON:
 """
 
 
+SHORT_SCRIPT_PROMPT = """
+Kamu penulis naskah video pendek "faceless" untuk TikTok, YouTube Shorts, dan Reels, audiens Indonesia.
+Tulis naskah ±{SECONDS} detik tentang topik di bawah, berdasarkan SUMBER BERITA yang diberikan.
+
+PANJANG (WAJIB): 4-8 adegan, total maksimal {WORDS} kata. Satu video hanya untuk satu ide.
+
+STRUKTUR
+- Adegan 1 = hook: kalimat pertama langsung ke angka, kejutan, atau pertanyaan paling tajam. Tanpa salam, tanpa nama channel.
+- Tengah = bangun rasa penasaran, lalu bayar janji hook dengan fakta dari sumber dan dampaknya ke penonton.
+- Adegan terakhir = satu pertanyaan spesifik yang memancing komentar, diakhiri tanda tanya.
+- DILARANG memberi tanda video akan selesai: "sekian", "terima kasih sudah menonton", ajakan like, follow, atau subscribe.
+
+AKURASI (PALING PENTING)
+- Fakta terbaru (angka, tanggal, nama, kejadian) HANYA dari SUMBER BERITA. Sebut medianya secara lisan untuk fakta penting.
+- JANGAN menambah klaim atau angka spesifik yang tidak ada di sumber. Jangan menuduh orang tertentu melakukan kejahatan.
+- Untuk topik investasi, jangan mengajak membeli atau menjual.
+
+GAYA BICARA
+- Bicara ke satu orang dengan "lu" dan "gue", bahasa Jakarta yang santai tapi tidak kasar. Kalimat pendek dan padat.
+- DILARANG frasa klise AI: "mari kita bahas", "di era digital ini", "perlu diingat bahwa", "kesimpulannya", "menariknya".
+
+ADEGAN (semua kind "narration", chapter "", start_time "", end_time "")
+- text: 1-2 kalimat lisan, 6-22 kata. Tulis angka dengan digit persis seperti di sumber (38 klub, 2026, Rp2,5 juta), jangan dieja.
+- query: 2-4 kata kunci BAHASA INGGRIS untuk video stok yang cocok, tanpa nama orang atau merek.
+
+Juga tulis title (maks 60 karakter, tanpa emoji), summary (1-2 kalimat, tanpa hashtag), dan thumbnail_texts (2-3 pilihan teks sampul, maks 28 huruf).
+Kembalikan HANYA JSON:
+{"title": "...", "summary": "...", "thumbnail_texts": ["...", "..."], "scenes": [{"kind": "narration", "chapter": "", "text": "...", "query": "...", "start_time": "", "end_time": ""}]}
+"""
+
+
+def _word_count(project: dict) -> int:
+    return sum(len(s["text"].split()) for s in project["scenes"])
+
+
+def _short_script(topic: str, angle: str, user_text: str, seconds: int, api_key: str | None) -> dict:
+    """Naskah yang kepanjangan diminta ulang sekali, karena batas 60 detik adalah syarat format ini."""
+    from gemini_service import _call_gemini
+    words = klik_render.target_words(seconds)
+    prompt = SHORT_SCRIPT_PROMPT.replace("{SECONDS}", str(seconds)).replace("{WORDS}", str(words))
+    for attempt in range(2):
+        note = "" if not attempt else f"\n\nNaskah sebelumnya terlalu panjang. Tulis ulang maksimal {words} kata."
+        data = _call_gemini(prompt, user_text + note, api_key=api_key, schema=longform.script_schema(4))
+        if not isinstance(data, dict):
+            raise ValueError("Format naskah dari AI tidak sesuai.")
+        data["scenes"] = [s for s in data.get("scenes") or [] if isinstance(s, dict) and s.get("kind") != "quote"]
+        project = longform.script_from_ai(data, [])
+        if len(project["scenes"]) >= 3 and _word_count(project) <= words * 1.15:
+            for scene in project["scenes"]:
+                scene["chapter"] = ""
+            return project
+    raise ValueError("Naskah dari AI masih terlalu panjang untuk video pendek. Coba lagi.")
+
+
 def generate_script(topic: str, angle: str, sources: list, minutes: int, api_key: str | None = None,
-                    channel: str = "") -> dict:
+                    channel: str = "", seconds: int | None = None, video_format: str | None = None) -> dict:
     from gemini_service import _call_gemini
     minutes = minutes if minutes in longform.DURATIONS else 8
     with ThreadPoolExecutor(max_workers=MAX_SOURCES) as pool:
@@ -322,12 +408,25 @@ def generate_script(topic: str, angle: str, sources: list, minutes: int, api_key
                       + (text or "(isi artikel tidak bisa dibaca; pakai judulnya saja, jangan mengarang isinya)"))
     if not any(texts):
         print("[Topik] Tidak ada isi artikel yang terbaca, naskah hanya dari judul berita")
+    if seconds:
+        user_text = f"TOPIK: {topic}\n" + (f"SUDUT PANDANG: {angle}\n" if angle else "") + "\nSUMBER BERITA:\n\n" + "\n\n".join(blocks)
+        project = _short_script(topic, angle, user_text, seconds, api_key)
+        project.update({"format": klik_render.SHORT, "seconds": seconds, "topic": longform._clean(topic, 200), "angle": longform._clean(angle, 400),
+                        "sources": sources, "read_sources": sum(1 for t in texts if t), "channel": channel})
+        return project
     chapters_n, per_chapter, _ = longform.SCRIPT_SHAPE[minutes]
     per_chapter += 1  # tanpa kutipan podcast: durasinya diisi narasi
+    klik = video_format == klik_render.LONG
+    if klik:  # adegan lebih pendek: gambar berganti lebih sering, durasi tetap
+        per_chapter = min(int(per_chapter * 1.5), (longform.MAX_SCENES - 4) // chapters_n)
     narration = chapters_n * per_chapter + 4
-    prompt = longform.prompt_for(TOPIC_SCRIPT_PROMPT, channel, {
+    template = TOPIC_SCRIPT_PROMPT
+    if klik:
+        template = template.replace("- text: 2-3 kalimat lisan sehari-hari, 25-40 kata, enak dibacakan.",
+                                    "- text: 1-2 kalimat lisan sehari-hari, 12-24 kata, enak dibacakan. Tulis angka dengan digit persis seperti di sumber (38 klub, 2026, Rp2,5 juta), jangan dieja.")
+    prompt = longform.prompt_for(template, channel, {
         "MINUTES": minutes, "CHAPTERS": chapters_n, "PER_CHAPTER": per_chapter, "NARRATION": narration,
-        "WORDS": narration * longform.WORDS_PER_SCENE})
+        "WORDS": narration * (16 if klik else longform.WORDS_PER_SCENE)})
     user_text = f"TOPIK: {topic}\n" + (f"SUDUT PANDANG: {angle}\n" if angle else "") + "\nSUMBER BERITA:\n\n" + "\n\n".join(blocks)
     data = _call_gemini(prompt, user_text, api_key=api_key, schema=longform.script_schema())
     if not isinstance(data, dict):
@@ -338,4 +437,6 @@ def generate_script(topic: str, angle: str, sources: list, minutes: int, api_key
         raise ValueError("AI tidak menghasilkan naskah yang cukup. Coba lagi.")
     project.update({"topic": longform._clean(topic, 200), "angle": longform._clean(angle, 400), "sources": sources,
                     "minutes": minutes, "read_sources": sum(1 for t in texts if t), "channel": channel})
+    if klik:
+        project["format"] = klik_render.LONG
     return project

@@ -24,6 +24,7 @@ import wave
 
 import requests
 
+import elevenlabs_tts
 import motion_scenes
 from caption_styles import FONTS
 from render_pipeline import _fonts_dir_for, _remove_quietly, _run_ffmpeg
@@ -177,7 +178,7 @@ def sanitize_scenes(raw, previous: dict | None, source_duration: float | None) -
 def sanitize_voice(raw) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     return {
-        "voice": raw.get("voice") if raw.get("voice") in VOICES else DEFAULT_VOICE,
+        "voice": raw.get("voice") if raw.get("voice") in VOICES or elevenlabs_tts.is_voice(raw.get("voice")) else DEFAULT_VOICE,
         "style": _clean(raw.get("style"), 160) or DEFAULT_STYLE,
     }
 
@@ -241,7 +242,7 @@ def description(project: dict, chapter_list: list, channel: str, youtube_url: st
 # Gaya bicara, pembuka & penutup khas YouTuber faceless. {GREETING}/{SIGNOFF} diisi dari nama channel.
 VOICE_RULES = """
 GAYA BICARA (harus terdengar seperti YouTuber sungguhan yang ngobrol, bukan teks AI)
-- Bicara ke satu orang dengan "kamu". Bahasa lisan santai tapi sopan; boleh "nggak", "gimana", "nah", "jujur aja",
+- Bicara ke satu orang dengan "lu" dan "gue", bahasa Jakarta yang santai tapi tidak kasar; boleh "nggak", "gimana", "nah", "jujur aja",
   secukupnya. Variasikan panjang kalimat, selipkan pertanyaan retoris dan reaksi kecil ("Masuk akal, kan?").
 - Transisi antarbab yang alami, mis. "Nah, di sinilah masalahnya.", "Tapi tunggu dulu.", "Pertanyaannya sekarang...".
 - DILARANG frasa klise AI: "mari kita selami", "mari kita bahas", "di era digital ini", "di dunia yang terus berkembang",
@@ -318,7 +319,7 @@ Kembalikan HANYA JSON:
 """
 
 
-def script_schema() -> dict:
+def script_schema(min_scenes: int = 8) -> dict:
     text = {"type": "string"}
     scene = {
         "type": "object",
@@ -328,7 +329,7 @@ def script_schema() -> dict:
     return {
         "type": "object",
         "properties": {"title": text, "summary": text, "thumbnail_texts": {"type": "array", "items": text},
-                       "scenes": {"type": "array", "items": scene, "minItems": 8}},
+                       "scenes": {"type": "array", "items": scene, "minItems": min_scenes}},
         "required": ["title", "summary", "thumbnail_texts", "scenes"],
     }
 
@@ -433,7 +434,10 @@ def wav_duration(path: str) -> float:
 
 
 def synthesize(text: str, voice: dict, out_path: str, api_key: str | None) -> float:
-    """Gemini TTS satu adegan → WAV (24 kHz mono). Return durasi (detik)."""
+    """Suara satu adegan → WAV mono, lewat ElevenLabs atau Gemini TTS sesuai suara yang dipilih. Return durasi (detik)."""
+    if elevenlabs_tts.is_voice(voice["voice"]):
+        elevenlabs_tts.synthesize(text, voice["voice"], out_path)
+        return wav_duration(out_path)
     from gemini_service import _get_client
     last = None
     for attempt in range(2):

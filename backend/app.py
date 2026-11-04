@@ -33,6 +33,10 @@ import longform
 import longform_thumb
 import motion_projects
 import motion_scenes
+import base64
+import elevenlabs_tts
+import klik_render
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import topics
 import transcript_service
 import niche
@@ -1832,6 +1836,19 @@ def motion_projects_update(project_id):
     return jsonify({"project": project})
 
 
+@app.route("/motion-projects/<project_id>/brief", methods=["PUT"])
+def motion_projects_brief(project_id):
+    user = _user()
+    _require_admin(user)
+    if not motion_projects.ID_RE.match(project_id):
+        raise ApiError(400, "Proyek tidak valid.")
+    with _templates_lock:
+        project = motion_projects.update_brief(_motion_path(user), project_id, request.get_json(silent=True) or {})
+    if project is None:
+        raise ApiError(404, "Proyek tidak ditemukan.")
+    return jsonify({"project": project})
+
+
 @app.route("/motion-projects/<project_id>", methods=["DELETE"])
 def motion_projects_delete(project_id):
     user = _user()
@@ -2383,6 +2400,11 @@ def _longform_url(base: str, user: User, video_id: str, filename: str, path: str
                              int(os.path.getmtime(path)))
 
 
+def _voice_options() -> list:
+    eleven = [{"id": k, "name": f"ElevenLabs {v}", "label": "natural"} for k, v in elevenlabs_tts.VOICES.items()] if elevenlabs_tts.available() else []
+    return eleven + [{"id": k, "name": k, "label": v} for k, v in longform.VOICES.items()]
+
+
 def _longform_payload(user: User, video_id: str, folder: str, project: dict | None) -> dict:
     base = _public_base()
     is_topic = topics.is_topic_id(video_id)
@@ -2390,8 +2412,11 @@ def _longform_payload(user: User, video_id: str, folder: str, project: dict | No
     data = {
         "kind": "topic" if is_topic else "podcast",
         "project": None,
-        "voices": [{"id": k, "label": v} for k, v in longform.VOICES.items()],
+        "voices": _voice_options(),
         "durations": list(longform.DURATIONS),
+        "short_seconds": list(klik_render.SECONDS_CHOICES),
+        "short_max": klik_render.MAX_SECONDS,
+        "preparing": _prepare_state.get(video_id),
         "stock_provider": longform.stock_provider(),
         "source_ready": bool(source or youtube_url),
         "brand": _load_brand(user),
@@ -2417,6 +2442,8 @@ def _longform_payload(user: User, video_id: str, folder: str, project: dict | No
     thumb = project.get("thumbnail") or {}
     thumb_path = thumb.get("filename") and os.path.join(folder, thumb["filename"])
     data["project"] = {
+        "format": project.get("format"),
+        "seconds": project.get("seconds"),
         "title": project.get("title", ""),
         "summary": project.get("summary", ""),
         "voice": voice,
@@ -2468,8 +2495,9 @@ def longform_script(video_id):
     channel = _channel_from_request(user, data)
     if topics.is_topic_id(video_id):
         old = _longform_project(folder)
+        seconds = _short_seconds(data.get("seconds") or old.get("seconds")) if klik_render.is_short(old) else None
         project = _topic_script(user, old.get("topic", ""), focus or old.get("angle", ""), old.get("sources") or [], minutes,
-                                channel)
+                                channel, seconds, old.get("format"))
         return jsonify(_longform_payload(user, video_id, folder, _replace_script(folder, project, old)))
     focus = focus or (longform.load_project(folder) or {}).get("focus", "")
     if not focus:
@@ -2501,6 +2529,10 @@ def longform_script(video_id):
     return jsonify(_longform_payload(user, video_id, folder, _replace_script(folder, project, longform.load_project(folder))))
 
 
+def _short_seconds(value) -> int:
+    return value if value in klik_render.SECONDS_CHOICES else 30
+
+
 def _replace_script(folder: str, project: dict, old: dict | None) -> dict:
     """Simpan naskah baru: suara lama tidak berlaku lagi (hasil render terakhir tetap disimpan)."""
     old = old or {}
@@ -2528,6 +2560,8 @@ def longform_save(video_id):
 
 
 def _longform_save_locked(user, video_id, folder, data, duration):
+    if (_prepare_state.get(video_id) or {}).get("running"):
+        raise ApiError(409, "Video masih disiapkan. Tunggu sampai selesai, lalu edit.", "preparing")
     project = _longform_project(folder)
     scenes = longform.sanitize_scenes(data.get("scenes"), project, duration)
     if not any(s["kind"] == "narration" for s in scenes):
@@ -2559,6 +2593,8 @@ def longform_tts(video_id, scene_id):
     filename = f"{scene_id}.tts.{uuid.uuid4().hex[:6]}.wav"
     try:
         duration = longform.synthesize(text, voice, os.path.join(folder, filename), None)
+    except elevenlabs_tts.VoiceError as e:
+        raise ApiError(422, str(e), "tts_failed")
     except Exception as e:
         print(f"[Longform] TTS gagal: {e!r}")
         raise ApiError(422, _gemini_error_message(e), "tts_failed")
@@ -2647,6 +2683,16 @@ def longform_auto_visuals(video_id):
     if not longform.stock_enabled():
         raise ApiError(503, STOCK_DISABLED, "stock_disabled")
     project = _longform_project(folder)
+    try:
+        _fill_visuals(project)
+    except RuntimeError as e:
+        raise ApiError(429, str(e), "stock_limit")
+    longform.save_project(folder, project)
+    return jsonify(_longform_payload(user, video_id, folder, project))
+
+
+def _fill_visuals(project: dict) -> int:
+    """Isi adegan narasi yang belum punya visual dengan hasil teratas video stok, tanpa duplikat."""
     used = {(s["visual"]["provider"], s["visual"]["id"]) for s in project["scenes"] if s.get("visual")}
     filled = 0
     for scene in project["scenes"]:
@@ -2654,10 +2700,10 @@ def longform_auto_visuals(video_id):
             continue
         try:
             results = longform.search_stock(scene["query"])
-        except RuntimeError as e:
+        except RuntimeError:
             if filled:
                 break  # batas API: simpan yang sudah terisi
-            raise ApiError(429, str(e), "stock_limit")
+            raise
         except requests.RequestException:
             continue
         pick = next((r for r in results if (r["provider"], r["id"]) not in used), None)
@@ -2665,8 +2711,149 @@ def longform_auto_visuals(video_id):
             scene["visual"] = pick
             used.add((pick["provider"], pick["id"]))
             filled += 1
-    longform.save_project(folder, project)
-    return jsonify(_longform_payload(user, video_id, folder, project))
+    return filled
+
+
+# Suara channel: rekaman sendiri tetap bisa menggantikannya per adegan
+CHANNEL_VOICE = {"voice": "Puck", "style": "Ngobrol santai ke teman sendiri pakai bahasa Jakarta gue-lu, hangat dan agak nyeletuk, "
+                                           "seperti kreator YouTube yang lagi cerita. Tempo cepat tapi tidak terburu-buru, intonasi naik "
+                                           "turun, jeda singkat untuk efek, tidak seperti penyiar berita atau robot."}
+CHANNEL_THUMB = {"accent": "hijau", "style": "tajuk"}
+VOICE_FAILURE_LIMIT = 2     # gagal berturut-turut sebanyak ini berarti layanannya bermasalah, jadi tidak perlu menunggu adegan sisanya
+
+
+def _channel_voice(chosen=None) -> dict:
+    """Suara pilihan, atau Gemini Puck sebagai suara channel. Satu proyek memakai satu suara, jadi tidak beralih otomatis saat gagal."""
+    if any(v["id"] == chosen for v in _voice_options()):
+        return {**CHANNEL_VOICE, "voice": chosen}
+    return CHANNEL_VOICE
+
+
+VOICE_PREVIEW_TEXT = "Gaji 10 juta, tapi tanggal 20 udah deg-degan buka m-banking. Lu pikir gaji lu kurang? Belum tentu."
+
+
+@app.route("/longform/voice-preview", methods=["POST"])
+def longform_voice_preview():
+    """Contoh satu suara, disimpan per suara supaya kredit hanya terpakai sekali."""
+    user = _user()
+    _require_admin(user)
+    voice_id = (request.get_json(silent=True) or {}).get("voice")
+    if not any(v["id"] == voice_id for v in _voice_options()):
+        raise ApiError(400, "Suara ini tidak tersedia.", "bad_voice")
+    folder = os.path.join(_owner_root(CLIPS_ROOT, user), "_topics", "voice_preview")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"{voice_id}.wav")
+    if not os.path.isfile(path):
+        tmp = f"{path}.{uuid.uuid4().hex[:6]}.wav"
+        try:
+            _synthesize_with_timeout(VOICE_PREVIEW_TEXT, {**CHANNEL_VOICE, "voice": voice_id}, tmp)
+            os.replace(tmp, path)
+        except elevenlabs_tts.VoiceError as e:
+            raise ApiError(422, str(e), "tts_failed")
+        except Exception as e:
+            print(f"[Suara] Contoh gagal: {e!r}")
+            raise ApiError(422, "Contoh suara gagal dibuat. Coba lagi sebentar lagi, atau pilih suara lain.", "tts_failed")
+        finally:
+            _remove_quietly(tmp)
+    with open(path, "rb") as f:
+        return jsonify({"audio": "data:audio/wav;base64," + base64.b64encode(f.read()).decode("ascii")})
+
+
+# Progres "Generate" per proyek. Hanya di memori: kalau server mati, tombol Lengkapi otomatis melanjutkan yang kurang.
+_prepare_state: dict = {}
+
+
+TTS_TIMEOUT = 120   # satu panggilan suara yang macet tidak boleh menahan seluruh proses Generate
+
+
+def _synthesize_with_timeout(text: str, voice: dict, path: str) -> float:
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(longform.synthesize, text, voice, path, None).result(timeout=TTS_TIMEOUT)
+    except FutureTimeout:
+        raise TimeoutError(f"Suara tidak selesai dalam {TTS_TIMEOUT} detik")
+    finally:
+        pool.shutdown(wait=False)
+
+
+def _prepare_scene_voice(folder: str, scene_id: str, voice: dict):
+    with longform.edit_lock:
+        scene = _scene(_longform_project(folder), scene_id)
+    text = scene["text"]
+    filename = f"{scene_id}.tts.{uuid.uuid4().hex[:6]}.wav"
+    duration = _synthesize_with_timeout(text, voice, os.path.join(folder, filename))
+    with longform.edit_lock:
+        project = _longform_project(folder)
+        scene = _scene(project, scene_id)
+        _replace_audio(folder, scene, filename, {"file": filename, "source": "tts", "duration": round(duration, 2),
+                                                "hash": longform.tts_hash(text, voice)})
+        longform.save_project(folder, project)
+
+
+def _run_prepare(user: User, video_id: str, folder: str):
+    state = _prepare_state[video_id]
+    try:
+        state.update(step="Mencari video latar")
+        # Editor dikunci selama persiapan, jadi pencarian lewat jaringan tidak perlu memegang kunci
+        project = _longform_project(folder)
+        if not any(s.get("motion") for s in project["scenes"]):
+            motion_scenes.plan(project["scenes"], full=klik_render.uses_klik(project))
+        if longform.stock_enabled():
+            try:
+                _fill_visuals(project)
+            except (RuntimeError, requests.RequestException) as e:
+                state["errors"].append(f"Video latar: {e}")
+        with longform.edit_lock:
+            longform.save_project(folder, project)
+        voice = longform.sanitize_voice(project.get("voice"))
+        pending = [s["id"] for s in project["scenes"] if s["kind"] == "narration" and longform.audio_state(s, voice) != "ready"]
+        state.update(step="Membuat suara", done=0, total=len(pending))
+        made, streak, reason = 0, 0, ""
+        for scene_id in pending:
+            try:
+                _prepare_scene_voice(folder, scene_id, voice)
+                made += 1
+                streak = 0
+            except Exception as e:
+                streak += 1
+                reason = str(e) if isinstance(e, elevenlabs_tts.VoiceError) else ""
+                print(f"[Generate] Suara adegan {scene_id} gagal: {e!r}")
+            state["done"] += 1
+            if streak >= VOICE_FAILURE_LIMIT:
+                break
+        if made < len(pending):
+            state["errors"].append(f"{reason + ' ' if reason else ''}{len(pending) - made} adegan belum punya suara. "
+                                   "Klik Lengkapi otomatis untuk mencoba lagi, atau rekam suaramu di adegan itu.")
+        project = _longform_project(folder)
+        ideas = project.get("thumbnail_ideas") or []
+        if not klik_render.is_short(project) and not project.get("thumbnail") and ideas:
+            state.update(step="Membuat thumbnail")
+            brand = {**_load_brand(user), **CHANNEL_THUMB}
+            try:
+                _make_thumbnail(folder, project, longform_thumb.clean_text(ideas[0]), brand, None)
+            except Exception as e:
+                print(f"[Generate] Thumbnail gagal: {e!r}")
+                state["errors"].append("Thumbnail gagal dibuat. Coba lagi dari panel thumbnail.")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        state["errors"].append(f"Persiapan berhenti: {str(e)[:160]}")
+    finally:
+        state.update(running=False, step="Selesai")
+
+
+def _start_prepare(user: User, video_id: str, folder: str):
+    _prepare_state[video_id] = {"running": True, "step": "Memulai", "done": 0, "total": 0, "errors": []}
+    threading.Thread(target=_run_prepare, daemon=True, args=(user, video_id, folder)).start()
+
+
+@app.route("/longform/topics/<video_id>/prepare", methods=["POST"])
+def longform_prepare(video_id):
+    """Lengkapi yang kurang sekaligus: visual, suara, dan thumbnail. Isi yang sudah ada tidak diganti, dan tidak merender."""
+    user, folder, _ = _longform_context(video_id)
+    if not (_prepare_state.get(video_id) or {}).get("running"):
+        _start_prepare(user, video_id, folder)
+    return jsonify(_longform_payload(user, video_id, folder, _longform_project(folder))), 202
 
 
 @app.route("/longform/topics/<video_id>/auto-motion", methods=["POST"])
@@ -2676,7 +2863,7 @@ def longform_auto_motion(video_id):
     user, folder, _ = _longform_context(video_id)
     with longform.edit_lock:
         project = _longform_project(folder)
-        motion_scenes.plan(project["scenes"])
+        motion_scenes.plan(project["scenes"], full=klik_render.uses_klik(project))
         longform.save_project(folder, project)
     return jsonify(_longform_payload(user, video_id, folder, project))
 
@@ -2693,6 +2880,13 @@ def longform_render(video_id):
     if pending:
         raise ApiError(400, f"Adegan {', '.join(map(str, pending[:8]))}{'…' if len(pending) > 8 else ''} belum punya suara "
                             "(atau teksnya berubah setelah suara dibuat).", "audio_missing")
+    if (_prepare_state.get(video_id) or {}).get("running"):
+        raise ApiError(409, "Video masih disiapkan. Tunggu sampai selesai, lalu render.", "preparing")
+    if klik_render.is_short(project):
+        spoken = klik_render.recorded_seconds(project, folder)
+        if spoken > klik_render.MAX_SECONDS:
+            raise ApiError(400, f"Suaranya {spoken:.0f} detik, sedangkan video pendek maksimal {klik_render.MAX_SECONDS} detik. "
+                                "Pendekkan naskah atau rekam ulang lebih cepat.", "short_too_long")
     source, youtube_url = (None, "") if topics.is_topic_id(video_id) else _editor_source(user, video_id)
     if any(s["kind"] == "quote" for s in project["scenes"]) and not (source or youtube_url):
         raise ApiError(400, "Adegan kutipan butuh file video podcast. Upload videonya di halaman video, atau hapus kutipannya.",
@@ -2709,6 +2903,28 @@ def longform_render(video_id):
     threading.Thread(target=_run_longform_job, daemon=True,
                      args=(job["id"], user, video_id, folder, source, youtube_url, analysis)).start()
     return jsonify({"job": job}), 202
+
+
+def _finish_klik(folder, project, out_name, result, channel):
+    project = longform.load_project(folder) or project
+    chapter_list = [] if klik_render.is_short(project) else longform.chapters(project["scenes"], result["durations"])
+    old = (project.get("output") or {}).get("filename")
+    if old and old != out_name:
+        _remove_quietly(os.path.join(folder, old))
+    project["output"] = {"filename": out_name, "rendered_at": time.strftime("%Y-%m-%d %H:%M:%S"), "duration": result["duration"],
+                         "chapters": [{"at": t, "title": title} for t, title in chapter_list],
+                         "description": klik_render.short_description(project, channel) if klik_render.is_short(project)
+                         else longform.description(project, chapter_list, channel, "")}
+    longform.save_project(folder, project)
+
+
+def _finish_render_job(job_id, user):
+    try:
+        accounts.record_usage(user.id, "render")
+    except AccountsError as e:
+        print(f"[Accounts] Gagal mencatat pemakaian render: {e}")
+    jobs.update_segment(job_id, 1, status="done", progress=100, message=None)
+    jobs.update(job_id, status="done")
 
 
 def _run_longform_job(job_id, user, video_id, folder, source, youtube_url, analysis):
@@ -2730,6 +2946,12 @@ def _run_longform_job(job_id, user, video_id, folder, source, youtube_url, analy
                 jobs.update_segment(job_id, 1, status="running", progress=msg.get("progress", 0), message=msg.get("message"))
 
             out_name = f"longform_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+            if klik_render.uses_klik(project):
+                channel = project.get("channel") or _load_brand(user).get("channel", "")
+                result = klik_render.render(project, folder, out_name, channel, cb)
+                _finish_klik(folder, project, out_name, result, channel)
+                _finish_render_job(job_id, user)
+                return
             transcript = [] if topics.is_topic_id(video_id) else transcript_service._load_cached(video_id) or []
             result = longform.render(project, folder, source, transcript,
                                      f"Podcast: {meta.get('channel', '')}".strip(": "), out_name, cb)
@@ -2749,12 +2971,7 @@ def _run_longform_job(job_id, user, video_id, folder, source, youtube_url, analy
                                                 "" if topics.is_topic_id(video_id) else _cached_youtube_url(video_id)),
         }
         longform.save_project(folder, project)
-        try:
-            accounts.record_usage(user.id, "render")
-        except AccountsError as e:
-            print(f"[Accounts] Gagal mencatat pemakaian render: {e}")
-        jobs.update_segment(job_id, 1, status="done", progress=100, message=None)
-        jobs.update(job_id, status="done")
+        _finish_render_job(job_id, user)
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -2776,8 +2993,17 @@ def longform_thumbnail(video_id):
         raise ApiError(400, "Teks thumbnail tidak boleh kosong.", "empty_text")
     project = _longform_project(folder)
     brand = _save_brand(user, {"accent": data.get("accent"), "style": data.get("style")})
+    try:
+        project = _make_thumbnail(folder, project, text, brand, data.get("scene_id"))
+    except Exception as e:
+        print(f"[Thumbnail] Gagal: {e!r}")
+        raise ApiError(500, "Thumbnail gagal dibuat. Coba lagi.", "thumbnail_failed")
+    return jsonify(_longform_payload(user, video_id, folder, project))
+
+
+def _make_thumbnail(folder: str, project: dict, text: str, brand: dict, wanted) -> dict:
     with_visual = [s for s in project["scenes"] if s.get("visual")]
-    wanted = data.get("scene_id")  # "none" = latar polos
+    # wanted "none" = latar polos
     scene = None if wanted == "none" else next((s for s in with_visual if s["id"] == wanted),
                                                with_visual[0] if with_visual else None)
     video_path = None
@@ -2787,12 +3013,7 @@ def longform_thumbnail(video_id):
         except Exception as e:
             print(f"[Thumbnail] Video stok gagal diunduh, pakai latar polos: {e!r}")
     filename = f"thumb_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
-    try:
-        longform_thumb.render(text, brand, os.path.join(folder, filename), video_path,
-                              (scene or {}).get("visual", {}).get("duration") or 0)
-    except Exception as e:
-        print(f"[Thumbnail] Gagal: {e!r}")
-        raise ApiError(500, "Thumbnail gagal dibuat. Coba lagi.", "thumbnail_failed")
+    longform_thumb.render(text, brand, os.path.join(folder, filename), video_path, (scene or {}).get("visual", {}).get("duration") or 0)
     with longform.edit_lock:
         project = _longform_project(folder)
         old = (project.get("thumbnail") or {}).get("filename")
@@ -2801,7 +3022,7 @@ def longform_thumbnail(video_id):
         project["thumbnail"] = {"filename": filename, "text": text, "style": brand["style"], "accent": brand["accent"],
                                 "scene_id": scene["id"] if scene and video_path else None}
         longform.save_project(folder, project)
-    return jsonify(_longform_payload(user, video_id, folder, project))
+    return project
 
 
 @app.route("/longform-media/<video_id>/<filename>", methods=["GET"])
@@ -2869,7 +3090,7 @@ def longform_recommended():
     """
     user = _user()
     _require_admin(user)
-    niche_topics = niche.sanitize_niche(accounts.niche(user.id))["topics"]
+    niche_topics = list(topics.CHANNEL_NICHE)
     path = os.path.join(_owner_root(CLIPS_ROOT, user), "_topics", "recommended.json")
     with _recommend_lock:
         try:
@@ -2878,7 +3099,7 @@ def longform_recommended():
         except (OSError, ValueError):
             cached = {}
         fresh = (cached.get("niche") == niche_topics and time.time() - cached.get("generated_at", 0) < RECOMMEND_TTL
-                 and cached.get("ideas"))
+                 and cached.get("ideas") and all(i.get("fit") for i in cached["ideas"]))  # simpanan lama belum punya filter format
         if not fresh or request.args.get("refresh") == "1":
             try:
                 ideas = topics.generate_ideas(topics.gather_headlines("", niche_topics),
@@ -2895,14 +3116,15 @@ def longform_recommended():
                     "niche": [niche.CATEGORIES[t] for t in niche_topics]})
 
 
-def _topic_script(user: User, title: str, angle: str, sources: list, minutes: int, channel: str) -> dict:
+def _topic_script(user: User, title: str, angle: str, sources: list, minutes: int, channel: str, seconds: int | None = None,
+                  video_format: str | None = None) -> dict:
     try:
-        project = topics.generate_script(title, angle, sources, minutes, None, channel)
+        project = topics.generate_script(title, angle, sources, minutes, None, channel, seconds, video_format)
     except Exception as e:
         print(f"[Topik] Naskah gagal: {e!r}")
         raise ApiError(422, str(e) if isinstance(e, ValueError) else _gemini_error_message(e), "script_failed")
     accounts.record_usage(user.id, "analysis", server_key=True)
-    motion_scenes.plan(project["scenes"])
+    motion_scenes.plan(project["scenes"], full=klik_render.uses_klik(project))
     return project
 
 
@@ -2919,9 +3141,10 @@ def longform_topics():
             output = project.get("output") or {}
             items.append({"id": key, "title": project.get("title", ""), "topic": project.get("topic", ""),
                           "created_at": project.get("created_at", ""), "scenes": len(project.get("scenes", [])),
-                          "rendered_at": output.get("rendered_at"), "duration": output.get("duration")})
+                          "rendered_at": output.get("rendered_at"), "duration": output.get("duration"),
+                          "format": project.get("format") or "long"})
     items.sort(key=lambda x: x["created_at"], reverse=True)
-    return jsonify({"projects": items, "brand": _load_brand(user)})
+    return jsonify({"projects": items, "brand": _load_brand(user), "voices": _voice_options(), "default_voice": _channel_voice()["voice"]})
 
 
 @app.route("/longform/brand", methods=["PUT"])
@@ -2946,6 +3169,8 @@ def longform_topic_create():
     if not title:
         raise ApiError(400, "Topik tidak boleh kosong.")
     minutes = data.get("minutes") if data.get("minutes") in longform.DURATIONS else 8
+    video_format = data.get("format") if data.get("format") in klik_render.SIZES else None
+    seconds = _short_seconds(data.get("seconds")) if video_format == klik_render.SHORT else None
     sources = topics.sanitize_sources(data.get("sources"))
     if not sources:
         try:
@@ -2955,11 +3180,13 @@ def longform_topic_create():
         if not sources:
             raise ApiError(422, "Belum ada berita 7 hari terakhir tentang topik ini. Coba kata kunci lain.", "no_sources")
     project = _topic_script(user, title, longform._clean(data.get("angle"), 400), sources, minutes,
-                            _channel_from_request(user, data))
+                            _channel_from_request(user, data), seconds, video_format)
     key = topics.new_topic_id()
     folder = _topic_folder(_owner_root(CLIPS_ROOT, user), key)
-    project["voice"] = longform.sanitize_voice(None)
+    project["voice"] = _channel_voice(data.get("voice")) if video_format else longform.sanitize_voice(None)
     longform.save_project(folder, project)
+    if data.get("auto") is True:
+        _start_prepare(user, key, folder)
     return jsonify({"id": key, **_longform_payload(user, key, folder, project)}), 201
 
 

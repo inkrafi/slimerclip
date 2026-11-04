@@ -349,13 +349,19 @@ export interface StockVisual {
   duration: number
 }
 
-export type LongformMotionTemplate = 'kinetic' | 'data' | 'compare' | 'flow'
+export type LongformMotionTemplate = 'kinetic' | 'data' | 'compare' | 'flow' | 'ledger' | 'number' | 'share' | 'verdict' | 'picture' | 'choice'
 interface MotionSide { title: string; items: string[] }
 export type LongformMotion =
   | { template: 'kinetic'; lead: string; words: string[]; note: string }
   | { template: 'data'; title: string; values: number[]; prefix: string; suffix: string; caption: string; note: string }
   | { template: 'compare'; left: MotionSide; right: MotionSide }
   | { template: 'flow'; title: string; steps: { head: string; body: string }[] }
+  | { template: 'ledger'; title: string; rows: { label: string; value: number }[]; start: number; prefix: string; suffix: string; result: string }
+  | { template: 'number'; label: string; value: number; prefix: string; suffix: string; note: string; tone: 'bad' | 'plain' }
+  | { template: 'share'; label: string; percent: number; note: string }
+  | { template: 'verdict'; question: string; answer: string }
+  | { template: 'picture'; name: 'phone' | 'tire' | 'bowl' | 'wallet' | 'laptop'; title: string; note: string; screen: string }
+  | { template: 'choice'; title: string; options: string[]; pick: number; result: string }
 
 export interface LongformScene {
   id: string
@@ -402,8 +408,16 @@ export interface TopicIdea {
   title: string
   angle: string
   why: string
+  /** Format yang paling cocok untuk topik ini */
+  fit: TopicFit
+  fit_reason: string
+  /** Teknologi, Karier, atau Uang */
+  pillar: string
   sources: NewsSource[]
 }
+
+export type TopicFit = 'short' | 'long' | 'both'
+export type VideoFormat = 'short' | 'long'
 
 export interface TopicProjectSummary {
   id: string
@@ -413,6 +427,7 @@ export interface TopicProjectSummary {
   scenes: number
   rendered_at: string | null
   duration: number | null
+  format: VideoFormat
 }
 
 /** Ciri khas channel: nama (disebut di naskah) + gaya & warna thumbnail */
@@ -433,6 +448,10 @@ export interface LongformThumbnail {
 }
 
 export interface LongformProject {
+  /** short = video pendek 9:16; kosong = video panjang */
+  format?: VideoFormat
+  /** Video pendek: target durasi */
+  seconds?: number
   title: string
   summary: string
   /** Nama channel yang dipakai saat naskah ditulis */
@@ -456,8 +475,12 @@ export interface LongformData {
   /** podcast = dari video yang dianalisis; topic = dari topik/isu trending */
   kind: 'podcast' | 'topic'
   project: LongformProject | null
-  voices: { id: string; label: string }[]
+  voices: { id: string; name?: string; label: string }[]
   durations: number[]
+  short_seconds: number[]
+  short_max: number
+  /** Progres tombol Generate; null = tidak sedang disiapkan */
+  preparing: { running: boolean; step: string; done: number; total: number; errors: string[] } | null
   /** Penyedia video stok yang aktif (key diisi di backend/.env); null = latar polos */
   stock_provider: StockProvider | null
   /** File video podcast tersedia (untuk adegan kutipan) */
@@ -680,8 +703,39 @@ export interface MotionProjectInput {
   notes: string
 }
 
+/** Jawaban klien untuk menyusun prompt video peluncuran (lib/motion-prompts.ts) */
+export interface MotionBrief {
+  what_it_is: string
+  audience: string
+  goal: string
+  message: string
+  hook: string
+  problem: string
+  feature: string
+  payoff: string
+  tagline: string
+  cta: string
+  tone: string
+  language: string
+  seconds: number
+  cut_vertical: boolean
+  cut_square: boolean
+  ui_source: 'figma' | 'screenshots' | 'none'
+  colors: string
+  fonts: string
+  has_logo: boolean
+  has_backgrounds: boolean
+  counter: string
+  glow: string
+  cards: string
+  cursor_tabs: boolean
+  payoff_view: string
+  revision: string
+}
+
 export interface MotionProject extends MotionProjectInput {
   id: string
+  brief?: MotionBrief
   created_at: number
   updated_at: number
 }

@@ -4,7 +4,7 @@ import { Suspense } from 'react'
 import TopicsHub from '@/components/longform/TopicsHub'
 import RequireAuth from '@/components/RequireAuth'
 
-export default function LongformHubPage() {
+export default function VideoProjectsPage() {
   return (
     <RequireAuth>
       <Suspense fallback={null}>
