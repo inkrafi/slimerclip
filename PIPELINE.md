@@ -22,6 +22,14 @@ link/upload ─▶ 1 metadata ─▶ 2 transkrip ─▶ 3 pilih momen (Gemini) �
 
 **Edit otomatis** (`backend/auto_edit.py`): klip yang belum pernah diedit dibuka di editor (dan dirender lewat "render semua") dengan hook dari analisis, musik sesuai suasana momen (musik bawaan `backend/music/bgm_*.m4a` hasil `tools/make_music.py`, atau upload pengguna yang namanya mengandung kata suasana), desain suara otomatis (lihat di bawah), penjernih suara (`highpass` + `afftdn` + EQ vokal), dan filter video HD (`hqdn3d` + `eq` + `unsharp`). Thumbnail dibuat otomatis saat editor pertama dibuka.
 
+**Preset Cinematic** (`backend/cinematic.py`, panel Visual di editor): warna sinematik, zoom ke pembicara (`zoompan`), teks kata kunci serif besar + teks kecil pengantar (menggantikan caption per kata), angka besar, nama pembicara. Teks selalu verbatim: Gemini hanya memilih nomor kata dari transkrip, lalu `_tidy` merapikan batasnya dan `fill_gaps` mengisi jeda panjang; kalau AI gagal dipakai `local_beats`. Waktu beat dalam detik video sumber.
+
+**Adegan Cinematic** (`backend/cinematic_scenes.py`): bagian klip yang berganti bentuk (3:4, square, 16:9), kartu berbingkai putih (otomatis untuk angka besar), atau B-roll stok (kata pencarian dipilih Gemini, video dari Pixabay/Pexels lewat `longform.search_stock`). Transisi glitch dan whoosh di tiap pergantian; whoosh tidak disimpan di resep. B-roll yang gagal dilewati, klip tetap selesai.
+
+**Animasi longform** (`motion/`, `backend/motion_scenes.py`): template Revideo (teks kinetik, grafik, perbandingan, alur) dirender transparan (.mov ProRes), lalu ditumpuk ke video stok oleh FFmpeg. Butuh `npm install` di folder `motion` dan Chrome/Chromium; tanpa itu adegan tetap dirender dengan video stok saja. Antar adegan memakai `xfade` dari sisa video di ujung adegan, jadi suara dan waktu bab tidak bergeser.
+
+**Bingkai video** (`backend/clip_frame.py`, panel Visual di editor): output tetap 9:16; video bisa penuh, 3:4, square (keduanya ikut pembicara memakai posisi crop dari tata letak), atau 16:9 di tengah dengan latar hitam atau blur. Berlaku untuk render final; pratinjau editor tetap penuh.
+
 **Efek suara**: tidak ada yang dipasang otomatis (desain suara otomatis sudah dihapus). Edit otomatis hanya mengisi hook, musik (-19 dB), suara jernih & HD; efek suara dipasang manual di editor. Efek bertanda `track` di resep lama dibuang saat `sanitize_edit`.
 
 **Batalkan render**: `POST /jobs/<id>/cancel` menandai job; worker berhenti di sela tahap, saat antre, atau mematikan FFmpeg yang sedang encode (`_run_ffmpeg(cancelled=...)`). Job ditutup `status: "error"`, `cancelled: true`; klip lama tetap, jatah render tidak terpakai.

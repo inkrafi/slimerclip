@@ -1,4 +1,8 @@
 import json
+import cinematic
+import cinematic_scenes
+import clip_frame
+import script_fonts
 import os
 import subprocess
 
@@ -404,6 +408,7 @@ class RenderPipeline:
         words_path = os.path.join(output_dir, f"{base_name}.words.json")
         shade_path = os.path.join(output_dir, f"{base_name}.shade.png")
         hook_shade_path = os.path.join(output_dir, f"{base_name}.hookshade.png")
+        card_path = os.path.join(output_dir, f"{base_name}.card.png")
         layout_path = os.path.join(output_dir, f"{base_name}.layout.json")
         assets_dir = options.get('assets_dir') or ''
 
@@ -437,7 +442,9 @@ class RenderPipeline:
 
             # Caption ASS (final saja)
             ass_filter = ""
-            if not preview and options.get('caption_enabled', True):
+            # Cinematic: teks kata kunci menggantikan caption per kata
+            cinema = (edit or {}).get('cinematic') or {} if not preview else {}
+            if not preview and options.get('caption_enabled', True) and not cinema.get('enabled'):
                 ass_name = f"{base_name}.ass"
                 self.caption_service.generate_ass(transcribed, os.path.join(output_dir, ass_name),
                                                   options.get('caption_style', {}))
@@ -454,7 +461,23 @@ class RenderPipeline:
             edit = {} if preview else (edit or {})
             marks = edit.get('marks') or {}
             extra_inputs = []  # input FFmpeg tambahan (index 1, 2, …)
+            # Teks Cinematic dipilih lebih dulu: zoom mengikuti waktunya
+            cinema_beats = []
+            if cinema.get('enabled'):
+                cinema_beats = cinematic.relative_beats(cinema.get('beats'), start_sec, duration)
+                if not cinema_beats:    # klip dirender tanpa membuka panelnya: pilih teks otomatis
+                    cinema_beats = cinematic.plan_beats(transcribed, options.get('api_key'))
+
             graph, label = layout_graph, "vlayout"
+            # Bingkai 3:4, square, 16:9: menggantikan tata letak penuh. Zoom hanya mengenai video di tengah, bukan latarnya.
+            frame = edit.get('frame') or {}
+            framed = clip_frame.is_framed(frame)
+            if framed:
+                fg_w, fg_h = clip_frame.foreground_size(frame, target_w)
+                fg_zoom = (cinematic.zoom_filter(cinema_beats, duration, fg_w, fg_h)
+                           if cinema.get('enabled') and cinema.get('zoom') else None)
+                src_w, src_h = _probe(video_path)
+                graph = clip_frame.build_graph(frame, layout_graph, src_w, src_h, target_w, target_h, fg_zoom)
             if not preview and (edit.get('enhance') or {}).get('video'):
                 # Filter HD (sebelum caption, agar teks tidak ikut diproses): sudah termasuk penajaman
                 graph += f";[{label}]{clip_effects.VIDEO_ENHANCE}[venh]"
@@ -466,6 +489,36 @@ class RenderPipeline:
                 if target_w > src_h * 9 / 16 * 1.3:
                     graph += f";[{label}]unsharp=5:5:0.6:5:5:0[vsharp]"
                     label = "vsharp"
+
+            cinema_scenes = []
+            if cinema.get('enabled'):
+                zoom = cinematic.zoom_filter(cinema_beats, duration, target_w, target_h) if cinema.get('zoom') and not framed else None
+                if zoom:
+                    graph += f";[{label}]{zoom}[vzoom]"
+                    label = "vzoom"
+                # Adegan: B-roll yang gagal diunduh dilewati, klip tetap selesai
+                wanted = cinematic_scenes.relative(cinema.get('scenes'), start_sec, duration)
+                if wanted:
+                    if callback: callback({'status': 'rendering', 'progress': 55})
+                    cinema_scenes, broll_paths = cinematic_scenes.download_broll(wanted)
+                if cinema_scenes:
+                    if any(s['look'] == 'card' for s in cinema_scenes):
+                        cinematic_scenes.write_card_png(card_path, target_w, target_h)
+                    src_w, src_h = _probe(video_path)
+                    layers, label, scene_inputs = cinematic_scenes.build_layers(
+                        cinema_scenes, broll_paths, label, layout_graph, src_w, src_h, target_w, target_h, duration,
+                        len(extra_inputs) + 1, card_path)
+                    extra_inputs.extend(scene_inputs)
+                    graph += ";" + layers
+                    glitch = (cinematic_scenes.glitch_graph(label, "vglitch", cinematic_scenes.boundaries(cinema_scenes, duration),
+                                                            target_w, target_h) if cinema.get('glitch') else None)
+                    if glitch:
+                        graph += ";" + glitch
+                        label = "vglitch"
+                grade = cinematic.grade_filter(cinema.get('grade', 0))
+                if grade:
+                    graph += f";[{label}]{grade}[vgrade]"
+                    label = "vgrade"
 
             vignette = edit.get('vignette') or {"shape": "radial", "strength": 0}
             if clip_effects.write_shade_png(vignette, target_w, target_h, shade_path):
@@ -499,6 +552,19 @@ class RenderPipeline:
                 with open(os.path.join(output_dir, mark_name), "w", encoding="utf-8") as f:
                     f.write(marks_text)
                 steps.append(f"ass={mark_name}:fontsdir={_fonts_dir_for(output_dir)}")
+            if cinema.get('enabled'):
+                cinema_words = " ".join(f"{b['lead']} {b['main']}" for b in cinema_beats) + f" {cinema.get('name', '')}"
+                font_override = script_fonts.family_for(cinema_words)[0]
+                # Saat ada layar terbagi, teks di garis tengah supaya tidak menutup wajah
+                cinema_y = 960 if "[bsplit]" in layout_graph else 1180
+                if framed:
+                    cinema_y = clip_frame.TEXT_Y[frame['ratio']]
+                cinema_text = cinematic.overlay_ass(cinema, cinema_beats, duration, cinema_y, font_override, cinema_scenes)
+                if cinema_text:
+                    cinema_name = f"{base_name}.cinema.ass"
+                    with open(os.path.join(output_dir, cinema_name), "w", encoding="utf-8") as f:
+                        f.write(cinema_text)
+                    steps.append(f"ass={cinema_name}:fontsdir={_fonts_dir_for(output_dir)}")
             graph += f";[{label}]{','.join(steps) or 'null'}[vfx]"
 
             logo_item = next((item for item in layout if item["kind"] == "logo"), None)
@@ -521,6 +587,13 @@ class RenderPipeline:
                 if path and 0 <= offset < duration and item['volume'] > 0:
                     extra_inputs.append(["-i", path])
                     sfx_inputs.append((len(extra_inputs), offset, item['volume']))
+            # Efek suara transisi Cinematic: tidak disimpan di resep, jadi efek suara manual tetap terpisah
+            if cinema.get('enabled') and cinema.get('sfx'):
+                for name, offset in cinematic_scenes.transition_sfx(cinema_scenes, duration):
+                    path = self._asset_path(assets_dir, name)
+                    if path:
+                        extra_inputs.append(["-i", path])
+                        sfx_inputs.append((len(extra_inputs), offset, cinematic_scenes.SFX_VOLUME))
             audio = clip_effects.audio_graph(music, music_index, sfx_inputs, duration, _has_audio(video_path), "aout",
                                              edit.get('voice'))
             audio_map = ["-map", "0:a:0?"]
@@ -553,6 +626,7 @@ class RenderPipeline:
             _remove_quietly(graph_path)
             _remove_quietly(shade_path)
             _remove_quietly(hook_shade_path)
+            _remove_quietly(card_path)
 
         if callback: callback({'status': 'done', 'progress': 100, 'output': final_output_path})
 

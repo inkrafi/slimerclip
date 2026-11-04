@@ -6,7 +6,9 @@ import { AlertCircle, CircleStop, Download, Loader2, RotateCcw, Sparkles, Wand2 
 import { toast } from 'sonner'
 import CaptionStyleEditor, { Range, Row, Toggle } from '@/components/CaptionStyleEditor'
 import AssetPicker from '@/components/editor/AssetPicker'
+import CinematicPanel from '@/components/editor/CinematicPanel'
 import ClipTitleField from '@/components/editor/ClipTitleField'
+import FramePanel from '@/components/editor/FramePanel'
 import { HookShade, MarksPreview, VignettePreview } from '@/components/editor/EffectPreview'
 import { HookOverlay, LiveCaption } from '@/components/editor/LiveOverlays'
 import MusicPanel from '@/components/editor/MusicPanel'
@@ -318,7 +320,7 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
             {vignetteChanged && <VignettePreview vignette={edit.vignette} />}
             {marksChanged && <MarksPreview marks={edit.marks} logoUrl={logo?.url} />}
             {clean && <HookShade hook={edit.hook} time={hookSettled ? Infinity : clipTime} end={hookSettled ? Infinity : hookEnd} clipEnd={edit.end - edit.start} />}
-            {clean && options.caption_enabled && transcript && (
+            {clean && options.caption_enabled && !edit.cinematic.enabled && transcript && (
               <LiveCaption
                 segments={transcript}
                 style={options.caption_style}
@@ -545,6 +547,19 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
 
             </div>
             <div role="tabpanel" id="panel-visual" aria-labelledby="tab-visual" hidden={tab !== 'visual'} className="divide-y divide-rule">
+          <Section title="Bingkai video" hint="Hasil akhirnya tetap 9:16. Selain Penuh, video tampil di tengah dengan latar hitam atau blur.">
+            <FramePanel frame={edit.frame} onChange={frame => setEdit({ ...edit, frame })} />
+          </Section>
+
+          <Section title="Gaya Cinematic" hint="Warna sinematik, zoom ke pembicara, teks kata kunci, angka besar, dan nama pembicara.">
+            <CinematicPanel videoId={videoId} clipKey={clipKey} edit={edit} disabled={rendering} playhead={playhead}
+              onChange={(patch, turnHookOff) => setEdit({
+                ...edit,
+                cinematic: { ...edit.cinematic, ...patch },
+                hook: turnHookOff ? { ...edit.hook, enabled: false } : edit.hook,
+              })} />
+          </Section>
+
           <Section title="Kualitas video" hint="Kurangi noise, warna & kontras sedikit naik, dan penajaman. Paling terasa untuk video sumber yang buram.">
             <Toggle label="Video lebih jernih & tajam (HD)" checked={edit.enhance.video}
               onChange={v => setEdit({ ...edit, enhance: { video: v } })} />

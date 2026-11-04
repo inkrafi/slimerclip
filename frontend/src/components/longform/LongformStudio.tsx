@@ -2,23 +2,22 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { AudioLines, Check, Copy, Download, FileText, Film, Image as ImageIcon, Loader2, RefreshCw, Sparkles, Wand2 } from 'lucide-react'
+import { AudioLines, Check, Copy, Download, FileText, Film, Image as ImageIcon, Loader2, RefreshCw, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import SceneCard from '@/components/longform/SceneCard'
 import ThumbnailPanel from '@/components/longform/ThumbnailPanel'
 import { useAuth } from '@/components/AuthProvider'
 import {
-  autoLongformVisuals, createLongformScript, deleteLongformAudio, downloadUrl, getJob, getJobs, getLongform, isJobActive,
-  longformTts, RENDER_STARTED_EVENT, renderLongform, saveLongform, uploadLongformRecording,
+  autoLongformMotion, autoLongformVisuals, createLongformScript, deleteLongformAudio, downloadUrl, getJob, getJobs, getLongform, isJobActive,
+  RENDER_STARTED_EVENT, renderLongform, saveLongform, uploadLongformRecording,
 } from '@/lib/api'
 import { formatClock, formatSpan } from '@/lib/clip-meta'
 import { chapterCount, newSceneId, sceneSeconds, STOCK_NAMES } from '@/lib/longform'
 import type { LongformData, LongformProject, LongformScene, RenderJob } from '@/lib/types'
 
-type Busy = 'script' | 'save' | 'tts-all' | 'visuals' | 'render' | null
+type Busy = 'script' | 'save' | 'motion' | 'visuals' | 'render' | null
 
 const POLL_MS = 2000
-const TTS_PARALLEL = 2
 
 
 function CopyButton({ text, label }: { text: string; label: string }) {
@@ -50,10 +49,10 @@ function Studio({ videoId }: { videoId: string }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<Busy>(null)
   const [working, setWorking] = useState<Set<string>>(new Set())
-  const [ttsProgress, setTtsProgress] = useState<{ done: number; total: number } | null>(null)
   const [job, setJob] = useState<RenderJob | null>(null)
   const [minutes, setMinutes] = useState(8)
   const [focus, setFocus] = useState('')
+  const [focusMissing, setFocusMissing] = useState(false)
   // Nama channel (disebut di pembuka & penutup naskah); null = belum dimuat dari brand tersimpan
   const [channel, setChannel] = useState<string | null>(null)
   const draftRef = useRef(draft)
@@ -65,6 +64,7 @@ function Studio({ videoId }: { videoId: string }) {
   const apply = useCallback((next: LongformData) => {
     setData(next)
     setDraft(next.project)
+    setFocus(prev => prev || next.project?.focus || '')
     setDirty(false)
   }, [])
 
@@ -156,10 +156,15 @@ function Studio({ videoId }: { videoId: string }) {
   }
 
   const createScript = (replace: boolean) => {
+    const angle = focus.trim()
+    if (!angle && !fromTopic) {
+      setFocusMissing(true)
+      return
+    }
     if (replace && !confirm('Buat ulang naskah? Naskah, suara, dan visual yang sekarang akan diganti.')) return
     run('script', async () => {
-      apply(await createLongformScript(videoId, minutes, focus, channel ?? ''))
-      toast.success('Naskah siap. Periksa dan edit sebelum membuat suara.')
+      apply(await createLongformScript(videoId, minutes, angle, channel ?? ''))
+      toast.success('Naskah siap. Periksa dan edit sebelum merekam suara.')
     })
   }
 
@@ -175,33 +180,10 @@ function Studio({ videoId }: { videoId: string }) {
     }
   }
 
-  const ttsAll = () => run('tts-all', async () => {
+  const autoMotion = () => run('motion', async () => {
     if (!(await save())) return
-    const queue = (draftRef.current?.scenes ?? []).filter(s => s.kind === 'narration' && s.audio_state !== 'ready').map(s => s.id)
-    if (!queue.length) {
-      toast.info('Semua adegan sudah punya suara.')
-      return
-    }
-    let done = 0
-    let failed = 0
-    setTtsProgress({ done, total: queue.length })
-    const worker = async () => {
-      for (let id = queue.shift(); id; id = queue.shift()) {
-        setWorking(prev => new Set(prev).add(id!))
-        try {
-          mergeAudio(await longformTts(videoId, id))
-        } catch (e) {
-          failed++
-          if (failed === 1) toast.error(e instanceof Error ? e.message : 'Suara gagal dibuat.')
-        } finally {
-          setWorking(prev => { const next = new Set(prev); next.delete(id!); return next })
-          setTtsProgress({ done: ++done, total: done + queue.length })
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: TTS_PARALLEL }, worker))
-    setTtsProgress(null)
-    if (!failed) toast.success('Semua suara selesai dibuat.')
+    apply(await autoLongformMotion(videoId))
+    toast.success('Animasi dipilih. Periksa isinya di tiap adegan.')
   })
 
   const autoVisuals = () => run('visuals', async () => {
@@ -257,15 +239,19 @@ function Studio({ videoId }: { videoId: string }) {
             <span className="mt-1 block text-xs text-ink-faint">Disebut di sapaan pembuka dan salam penutup. Diingat untuk video berikutnya.</span>
           </label>
           <label className="mt-4 block text-sm">
-            <span className="text-ink-muted">Fokus atau sudut pandang (opsional)</span>
-            <input value={focus} maxLength={200} onChange={e => setFocus(e.target.value)}
-              placeholder="Mis. pelajaran investasi & mental menghadapi uang"
-              className="mt-1 h-10 w-full rounded-md border border-rule bg-bay px-3 text-ink focus:border-signal focus:outline-none" />
+            <span className="text-ink-muted">Sudut pandangmu (wajib)</span>
+            <textarea value={focus} maxLength={200} rows={2} aria-invalid={focusMissing} aria-describedby="focus-help"
+              onChange={e => { setFocus(e.target.value); setFocusMissing(false) }}
+              placeholder="Mis. nasihat di podcast ini terlalu optimis, ini risiko yang jarang dibahas"
+              className="mt-1 w-full rounded-md border border-rule bg-bay px-3 py-2 text-ink focus:border-signal focus:outline-none" />
+            <span id="focus-help" className={`mt-1 block text-xs ${focusMissing ? 'text-signal' : 'text-ink-faint'}`}>
+              {focusMissing ? 'Tulis sudut pandangmu untuk memulai naskah.' : 'Podcast hanya jadi bahan riset. Argumen naskah mengikuti sudut pandang ini.'}
+            </span>
           </label>
           <button type="button" onClick={() => createScript(false)} disabled={busy === 'script'} className="btn btn-primary mt-5">
             {busy === 'script' ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Menulis naskah… (±30–60 dtk)</> : <><Wand2 className="size-4" aria-hidden /> Buat naskah</>}
           </button>
-          <p className="mt-2 text-xs text-ink-faint">Memakai kuota Gemini. Naskah bisa diedit sebelum suara dibuat.</p>
+          <p className="mt-2 text-xs text-ink-faint">Memakai kuota Gemini. Naskah bisa diedit sebelum suaramu direkam.</p>
         </section>
       </div>
     )
@@ -279,7 +265,6 @@ function Studio({ videoId }: { videoId: string }) {
   const total = scenes.reduce((sum, s) => sum + sceneSeconds(s), 0)
   const chapters = chapterCount(scenes)
   const locked = busy !== null || jobActive
-  const voice = draft.voice
   const output = draft.output
   const renderBlocked = missingAudio > 0 || (quotes > 0 && !data.source_ready)
 
@@ -287,7 +272,7 @@ function Studio({ videoId }: { videoId: string }) {
   const steps = [
     { icon: FileText, label: 'Naskah', detail: `${scenes.length} adegan`, done: !dirty, hint: dirty ? 'Belum disimpan' : 'Tersimpan' },
     { icon: AudioLines, label: 'Suara', detail: `${narration.length - missingAudio}/${narration.length}`, done: missingAudio === 0,
-      hint: missingAudio ? 'Buat suara AI atau rekam' : 'Siap' },
+      hint: missingAudio ? 'Rekam suaramu' : 'Siap' },
     { icon: ImageIcon, label: 'Visual', detail: `${withVisual}/${narration.length}`, done: noVisual === 0,
       hint: !data.stock_provider ? 'Latar polos (opsional)' : noVisual ? 'Isi otomatis atau pilih' : 'Siap' },
     { icon: Film, label: 'Render', detail: output ? formatSpan(output.duration) : '', done: !!output && !jobActive,
@@ -359,7 +344,6 @@ function Studio({ videoId }: { videoId: string }) {
                     next.splice(i + 1, 0, { id: newSceneId(), kind: 'narration', chapter: '', text: '', query: '', visual: null, audio_state: 'missing' })
                     return { ...p, scenes: next }
                   })}
-                  onTts={() => sceneOp(scene.id, () => longformTts(videoId, scene.id))}
                   onAudio={(blob, name) => sceneOp(scene.id, () => uploadLongformRecording(videoId, scene.id, blob, name))}
                   onDeleteAudio={() => sceneOp(scene.id, () => deleteLongformAudio(videoId, scene.id))}
                 />
@@ -386,6 +370,15 @@ function Studio({ videoId }: { videoId: string }) {
             {(channel ?? '').trim() !== (draft.channel ?? '') && (
               <p className="mt-1 text-xs text-ink-faint">Naskah ini ditulis {draft.channel ? <>untuk “{draft.channel}”</> : 'tanpa nama channel'}. Buat ulang naskah, atau edit adegan pembuka & penutup.</p>
             )}
+            {!fromTopic && (
+              <label className="mt-3 block text-sm">
+                <span className="text-ink-muted">Sudut pandangmu</span>
+                <textarea value={focus} maxLength={200} rows={3} disabled={locked} aria-invalid={focusMissing}
+                  onChange={e => { setFocus(e.target.value); setFocusMissing(false) }}
+                  className="mt-1 w-full rounded-md border border-rule bg-bay px-2 py-1.5 text-sm text-ink focus:border-signal focus:outline-none" />
+                {focusMissing && <span className="mt-1 block text-xs text-signal">Tulis sudut pandangmu untuk membuat ulang naskah.</span>}
+              </label>
+            )}
             <button type="button" onClick={() => createScript(true)} disabled={locked} className="btn btn-sm btn-quiet mt-2 -ml-2">
               {busy === 'script' ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <RefreshCw className="size-3.5" aria-hidden />} Buat ulang naskah
             </button>
@@ -408,23 +401,17 @@ function Studio({ videoId }: { videoId: string }) {
 
           <section className="rounded-lg border border-rule glass p-4">
             <h2 className="font-semibold text-ink">Suara</h2>
-            <label className="mt-3 block text-sm">
-              <span className="text-ink-muted">Suara AI (Gemini)</span>
-              <select value={voice.voice} disabled={locked} onChange={e => edit(p => ({ ...p, voice: { ...p.voice, voice: e.target.value } }))}
-                className="mt-1 block h-9 w-full rounded-md border border-rule bg-bay px-2 text-ink">
-                {data.voices.map(v => <option key={v.id} value={v.id}>{v.id}, {v.label.toLowerCase()}</option>)}
-              </select>
-            </label>
-            <label className="mt-3 block text-sm">
-              <span className="text-ink-muted">Gaya bicara</span>
-              <input value={voice.style} maxLength={160} disabled={locked} onChange={e => edit(p => ({ ...p, voice: { ...p.voice, style: e.target.value } }))}
-                className="mt-1 h-9 w-full rounded-md border border-rule bg-bay px-2 text-sm text-ink focus:border-signal focus:outline-none" />
-            </label>
-            <button type="button" onClick={ttsAll} disabled={locked || missingAudio === 0} className="btn btn-sm btn-quiet mt-3 -ml-2">
-              {busy === 'tts-all' ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Sparkles className="size-3.5" aria-hidden />}
-              {ttsProgress ? `Membuat suara ${ttsProgress.done}/${ttsProgress.total}…` : `Buat suara AI (${missingAudio} adegan)`}
+            <p className="mt-1 text-sm text-ink-muted">
+              {missingAudio ? `${missingAudio} adegan belum direkam.` : 'Semua adegan sudah direkam.'} Rekam atau unggah suaramu di tiap adegan.
+            </p>
+          </section>
+
+          <section className="rounded-lg border border-rule glass p-4">
+            <h2 className="font-semibold text-ink">Animasi</h2>
+            <p className="mt-1 text-sm text-ink-muted">Teks, grafik, perbandingan, dan alur di atas video latar. Sebaiknya hanya sebagian adegan.</p>
+            <button type="button" onClick={autoMotion} disabled={locked} className="btn btn-sm btn-quiet mt-2 -ml-2">
+              {busy === 'motion' ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Wand2 className="size-3.5" aria-hidden />} Isi animasi otomatis
             </button>
-            <p className="mt-2 text-xs text-ink-faint">Bisa juga rekam suaramu sendiri per adegan. Suara asli biasanya lebih dipercaya penonton.</p>
           </section>
 
           <section className="rounded-lg border border-rule glass p-4">

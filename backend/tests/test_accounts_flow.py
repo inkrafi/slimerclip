@@ -562,6 +562,8 @@ def test_longform_flow(env, monkeypatch):
             {"kind": "narration", "chapter": "Bab satu", "text": "Isi bab satu.", "query": "city"},
             {"kind": "quote", "chapter": "", "text": "kalimat dua", "start_time": "00:02", "end_time": "00:09"},
         ]}, tl))
+    res = c.post(f"/videos/{VIDEO_ID}/longform/script", headers=h, json={"minutes": 5})
+    assert res.status_code == 400 and res.json["code"] == "focus_required"
     res = c.post(f"/videos/{VIDEO_ID}/longform/script", headers=h, json={"minutes": 5, "focus": "investasi"})
     assert res.status_code == 200, res.json
     scenes = res.json["project"]["scenes"]

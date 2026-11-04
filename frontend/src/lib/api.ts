@@ -1,3 +1,4 @@
+import type { CinematicBeat, CinematicScene } from '@/lib/types'
 import type { MotionProject, MotionProjectInput } from '@/lib/types'
 import {
   AnalysisResult, ClientPreset, PerformanceClient, PerformanceReport, PublicReview, ReviewDecision, ReviewLink, ReviewPublishLink, ReviewSummary, ClipGenerateOptions, ClipProfile, ClipProfileOptions, ClipThumbnail, EditRecipe, EditTemplate, EditorAsset, EditorData, LongformBrand, LongformData, LongformProject, Me, TopicIdea, TopicProjectSummary, NicheSetting, RenderJob, StockVisual, RenderOptions, RenderedClip, Segment,
@@ -136,6 +137,14 @@ export const RENDER_STARTED_EVENT = 'slimerclip:render-started'
 export const getEditor = (videoId: string, key: string) =>
   request<EditorData>(`/videos/${encodeURIComponent(videoId)}/editor?key=${encodeURIComponent(key)}`)
 
+/** Rencana preset Cinematic dari transkrip klip: teks kata kunci dan adegan */
+export const planCinematic = (videoId: string, key: string, start: number, end: number) =>
+  request<{ beats: CinematicBeat[]; scenes: CinematicScene[] }>(`/videos/${encodeURIComponent(videoId)}/editor/cinematic-beats`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, start, end }),
+  })
+
 /** Render ulang satu klip dengan resep edit (dan teks caption yang diedit, jika ada). */
 export const renderEdit = (videoId: string, key: string, edit: EditRecipe, options: RenderOptions, transcript: TranscriptSegment[] | null) =>
   request<{ job: RenderJob }>(`/videos/${encodeURIComponent(videoId)}/editor`, {
@@ -187,6 +196,9 @@ export const uploadLongformRecording = (videoId: string, sceneId: string, audio:
 
 export const deleteLongformAudio = (videoId: string, sceneId: string) =>
   request<LongformData>(`${longformPath(videoId)}/scenes/${encodeURIComponent(sceneId)}/audio`, { method: 'DELETE' })
+
+export const autoLongformMotion = (videoId: string) =>
+  request<LongformData>(`${longformPath(videoId)}/auto-motion`, { method: 'POST' })
 
 export const autoLongformVisuals = (videoId: string) =>
   request<LongformData>(`${longformPath(videoId)}/visuals/auto`, { method: 'POST' })

@@ -16,3 +16,8 @@ desktop.ini
 # Claude Code & .md file
 .claude/settings.local.json
 SlimerClip_MVP.md
+
+# Template animasi longform
+motion/node_modules/
+motion/.test/
+motion/output/

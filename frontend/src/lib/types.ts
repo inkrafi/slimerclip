@@ -349,6 +349,14 @@ export interface StockVisual {
   duration: number
 }
 
+export type LongformMotionTemplate = 'kinetic' | 'data' | 'compare' | 'flow'
+interface MotionSide { title: string; items: string[] }
+export type LongformMotion =
+  | { template: 'kinetic'; lead: string; words: string[]; note: string }
+  | { template: 'data'; title: string; values: number[]; prefix: string; suffix: string; caption: string; note: string }
+  | { template: 'compare'; left: MotionSide; right: MotionSide }
+  | { template: 'flow'; title: string; steps: { head: string; body: string }[] }
+
 export interface LongformScene {
   id: string
   kind: 'narration' | 'quote'
@@ -361,6 +369,8 @@ export interface LongformScene {
   /** Kutipan: rentang detik di video podcast */
   start?: number
   end?: number
+  /** Narasi: animasi di atas video stok (backend/motion_scenes.py) */
+  motion?: LongformMotion | null
   audio?: { url: string; duration: number; source: 'tts' | 'record' }
   /** stale = teks/suara diubah setelah suara AI dibuat */
   audio_state?: 'missing' | 'stale' | 'ready'
@@ -427,6 +437,8 @@ export interface LongformProject {
   summary: string
   /** Nama channel yang dipakai saat naskah ditulis */
   channel?: string
+  /** Sudut pandang pembuat video; podcast hanya bahan riset */
+  focus?: string
   /** Saran teks thumbnail dari AI (*kata* = aksen) */
   thumbnail_ideas?: string[]
   thumbnail?: LongformThumbnail | null
@@ -514,6 +526,53 @@ export interface EditRecipe {
   voice: { volume: number; clean: boolean }
   /** Filter video lebih jernih & tajam */
   enhance: { video: boolean }
+  cinematic: CinematicSettings
+  frame: ClipFrame
+}
+
+/** Bingkai di dalam output 9:16 (backend/clip_frame.py): full 9:16, portrait 3:4, square 1:1, landscape 16:9 */
+export interface ClipFrame {
+  ratio: 'full' | 'portrait' | 'square' | 'landscape'
+  /** Latar di luar video saat tidak penuh */
+  background: 'black' | 'blur'
+}
+
+/** Teks besar preset Cinematic. Waktu dalam detik video sumber. */
+export interface CinematicBeat {
+  start: number
+  end: number
+  lead: string
+  main: string
+  kind: 'phrase' | 'number'
+}
+
+/** Preset Cinematic (backend/cinematic.py). Saat aktif, teks kata kunci menggantikan caption per kata. */
+export interface CinematicSettings {
+  enabled: boolean
+  /** Kekuatan warna 0–100 */
+  grade: number
+  zoom: boolean
+  name: string
+  role: string
+  beats: CinematicBeat[]
+  scenes: CinematicScene[]
+  /** Transisi glitch di tiap pergantian adegan */
+  glitch: boolean
+  /** Efek suara whoosh di tiap pergantian adegan */
+  sfx: boolean
+}
+
+export type SceneLook = 'portrait' | 'square' | 'landscape' | 'card' | 'broll'
+
+/** Bagian klip yang berganti bentuk (backend/cinematic_scenes.py). Waktu dalam detik video sumber. */
+export interface CinematicScene {
+  start: number
+  end: number
+  look: SceneLook
+  background: 'black' | 'blur'
+  /** Khusus B-roll */
+  query?: string
+  visual?: { provider: string; id: number | string; link: string; thumb?: string; page?: string; credit?: string; credit_url?: string; duration?: number }
 }
 
 export type HookStyle = 'spotlight' | 'tape' | 'poster' | 'light' | 'dark' | 'outline'

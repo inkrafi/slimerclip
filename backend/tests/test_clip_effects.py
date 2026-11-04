@@ -115,7 +115,7 @@ def test_template_style_keeps_look_only():
         "vignette": {"shape": "top", "strength": 55},
         "hook": {"enabled": True, "text": "teks khas klip", "style": "tape", "label": "POV"},
     })
-    assert set(style) == {"vignette", "marks", "music", "hook"}
+    assert set(style) == {"vignette", "marks", "music", "hook", "cinematic", "frame"}
     assert style["vignette"]["shape"] == "top" and style["vignette"]["strength"] == 55
     assert style["hook"]["enabled"] is True and style["hook"]["text"] == "" and style["hook"]["style"] == "tape"
 

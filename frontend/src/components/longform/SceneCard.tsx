@@ -1,8 +1,9 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ImageIcon, Loader2, Mic, Plus, Sparkles, Square, Trash2, Upload, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ImageIcon, Mic, Plus, Square, Trash2, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
+import MotionFields from '@/components/longform/MotionFields'
 import StockPicker from '@/components/longform/StockPicker'
 import { recordingFilename, useRecorder } from '@/hooks/useRecorder'
 import { formatClock } from '@/lib/clip-meta'
@@ -21,14 +22,13 @@ interface Props {
   onMove: (dir: -1 | 1) => void
   onRemove: () => void
   onAddAfter: () => void
-  onTts: () => void
   onAudio: (audio: Blob, filename: string) => void
   onDeleteAudio: () => void
 }
 
 const STATE_LABEL = {
   ready: { text: 'Suara siap', cls: 'text-teal' },
-  stale: { text: 'Teks berubah, buat ulang suaranya', cls: 'text-signal' },
+  stale: { text: 'Teks berubah, rekam ulang suaranya', cls: 'text-signal' },
   missing: { text: 'Belum ada suara', cls: 'text-ink-faint' },
 } as const
 
@@ -107,10 +107,6 @@ export default function SceneCard(props: Props) {
                 <audio controls preload="none" src={scene.audio.url} className="h-8 max-w-[15rem]" aria-label={`Suara adegan ${index + 1}`} />
               )}
               <span className="ml-auto flex flex-wrap gap-1.5">
-                <button type="button" onClick={props.onTts} disabled={busy || recorder.recording || !scene.text.trim()}
-                  title="Buat suara dengan Gemini TTS" className="btn btn-sm btn-quiet">
-                  {working ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Sparkles className="size-3.5" aria-hidden />} Suara AI
-                </button>
                 <button type="button" onClick={toggleRecord} disabled={busy && !recorder.recording}
                   className={`btn btn-sm ${recorder.recording ? 'bg-tally/15 text-tally' : 'btn-quiet'}`}>
                   {recorder.recording
@@ -133,6 +129,7 @@ export default function SceneCard(props: Props) {
                 e.target.value = ''
               }} />
             </div>
+            <MotionFields motion={scene.motion} disabled={locked} onChange={motion => props.onChange({ motion })} />
           </div>
 
           <div>

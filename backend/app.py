@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 load_dotenv()  # sebelum membaca CORS_ORIGINS / FLASK_DEBUG / SUPABASE_URL
 from auth import AUTH_ENABLED, User, current_user, derived_key
 from caption_styles import sanitize_caption_style
+import cinematic
+import cinematic_scenes
 import clip_effects
 import thumbnail
 import upload_kit
@@ -30,6 +32,7 @@ import telemetry
 import longform
 import longform_thumb
 import motion_projects
+import motion_scenes
 import topics
 import transcript_service
 import niche
@@ -1566,6 +1569,28 @@ def editor_get(video_id):
     })
 
 
+@app.route("/videos/<video_id>/editor/cinematic-beats", methods=["POST"])
+def editor_cinematic_beats(video_id):
+    """Rencana preset Cinematic dari transkrip klip: teks kata kunci dan adegan, dalam detik video sumber."""
+    user = _user()
+    _require_admin(user)
+    data = request.get_json(silent=True) or {}
+    folder, entry = _editor_clip(user, video_id, data.get("key"))
+    stored = render_pipeline.load_transcript(os.path.join(folder, _entry_base(entry) + ".words.json"))
+    if not stored:
+        return jsonify({"beats": [], "scenes": []})
+    try:
+        start, end = float(data.get("start")), float(data.get("end"))
+    except (TypeError, ValueError):
+        start, end = stored["range"]
+    segments = [{"words": [w for w in seg.get("words") or [] if w["start"] >= start - 0.05 and w["end"] <= end + 0.05]}
+                for seg in stored["segments"]]
+    beats = cinematic.plan_beats(segments)
+    picks = cinematic_scenes.pick_broll(beats, max(0.0, end - start))
+    scenes = cinematic_scenes.attach_stock(cinematic_scenes.plan(beats, start, end, picks))
+    return jsonify({"beats": beats, "scenes": cinematic_scenes.sanitize(scenes)})
+
+
 @app.route("/videos/<video_id>/editor", methods=["POST"])
 def editor_render(video_id):
     """Render final satu klip dengan resep edit (caption, hook, efek). Hasilnya bisa diunduh."""
@@ -2446,6 +2471,9 @@ def longform_script(video_id):
         project = _topic_script(user, old.get("topic", ""), focus or old.get("angle", ""), old.get("sources") or [], minutes,
                                 channel)
         return jsonify(_longform_payload(user, video_id, folder, _replace_script(folder, project, old)))
+    focus = focus or (longform.load_project(folder) or {}).get("focus", "")
+    if not focus:
+        raise ApiError(400, "Tulis sudut pandangmu untuk memulai naskah.", "focus_required")
     lines = transcript_service._load_cached(video_id)
     if not lines:
         raise ApiError(409, "Transkrip video ini tidak tersimpan. Analisis ulang videonya dulu.", "no_transcript")
@@ -2469,6 +2497,7 @@ def longform_script(video_id):
             except AccountsError as e:
                 print(f"[Accounts] Gagal mengembalikan jatah analisis: {e}")
     project["minutes"] = minutes
+    project["focus"] = focus
     return jsonify(_longform_payload(user, video_id, folder, _replace_script(folder, project, longform.load_project(folder))))
 
 
@@ -2637,6 +2666,18 @@ def longform_auto_visuals(video_id):
             used.add((pick["provider"], pick["id"]))
             filled += 1
     longform.save_project(folder, project)
+    return jsonify(_longform_payload(user, video_id, folder, project))
+
+
+@app.route("/longform/topics/<video_id>/auto-motion", methods=["POST"])
+@app.route("/videos/<video_id>/longform/auto-motion", methods=["POST"])
+def longform_auto_motion(video_id):
+    """Pilih animasi untuk adegan narasi yang belum punya, misalnya pada naskah lama."""
+    user, folder, _ = _longform_context(video_id)
+    with longform.edit_lock:
+        project = _longform_project(folder)
+        motion_scenes.plan(project["scenes"])
+        longform.save_project(folder, project)
     return jsonify(_longform_payload(user, video_id, folder, project))
 
 
@@ -2861,6 +2902,7 @@ def _topic_script(user: User, title: str, angle: str, sources: list, minutes: in
         print(f"[Topik] Naskah gagal: {e!r}")
         raise ApiError(422, str(e) if isinstance(e, ValueError) else _gemini_error_message(e), "script_failed")
     accounts.record_usage(user.id, "analysis", server_key=True)
+    motion_scenes.plan(project["scenes"])
     return project
 
 

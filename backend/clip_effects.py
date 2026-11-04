@@ -16,6 +16,8 @@ RenderPipeline._transcript_for), karena juga dipakai ulang tanpa edit.
 Tata letak watermark memakai satuan video 1080×1920 (sama dengan caption ASS); frontend
 (components/editor/ClipEditor.tsx) menghitung pratinjaunya dengan rumus yang sama.
 """
+import cinematic
+import clip_frame
 import math
 import os
 import re
@@ -130,6 +132,10 @@ DEFAULT_EDIT = {
     "voice": {"volume": 100, "clean": False},
     # Video: penajaman + kontras/warna sedikit naik + kurangi noise (resep lama tanpa field ini = mati)
     "enhance": {"video": False},
+    # Preset Cinematic (cinematic.py): warna, zoom, teks kata kunci, angka besar, nama pembicara
+    "cinematic": cinematic.DEFAULT,
+    # Bingkai di dalam output 9:16: penuh, 3:4, square, atau 16:9 dengan latar hitam/blur (clip_frame.py)
+    "frame": clip_frame.DEFAULT,
     "hook": {"enabled": False, "text": "", "label": "", "duration": 4, "style": "spotlight", "anim": "cut",
              "accent": "pink", "font": "montserrat", "size": 110, "position_y": 50, "shade": 85},
 }
@@ -278,6 +284,8 @@ def sanitize_edit(raw, default_start: float, default_end: float, video_duration:
         "hook": hook_clean,
         "voice": {"volume": int(_num(voice.get("volume"), 100, 0, 200)), "clean": bool(voice.get("clean", False))},
         "enhance": {"video": bool(enhance.get("video", False))},
+        "cinematic": cinematic.sanitize(raw.get("cinematic")),
+        "frame": clip_frame.sanitize(raw.get("frame")),
     }
 
 
@@ -308,7 +316,7 @@ def download_filename(title: str, fallback: str, ext: str = ".mp4") -> str:
     return f"{name or fallback}{ext}"
 
 
-TEMPLATE_PARTS = ("vignette", "marks", "music", "hook")
+TEMPLATE_PARTS = ("vignette", "marks", "music", "hook", "cinematic", "frame")
 
 
 def template_style(raw_edit) -> dict:
@@ -322,6 +330,8 @@ def template_style(raw_edit) -> dict:
     edit = sanitize_edit({**raw_edit, "hook": {**raw_hook, "text": "x"}}, 0, 60)
     style = {part: edit[part] for part in TEMPLATE_PARTS}
     style["hook"]["text"] = ""
+    # Format hanya menyimpan gayanya; teks dan nama pembicara khas tiap klip
+    style["cinematic"] = {**style["cinematic"], "name": "", "role": "", "beats": [], "scenes": []}
     return style
 
 
@@ -342,7 +352,12 @@ def apply_template(edit: dict, style: dict, hook_text: str, has_asset, source_te
     if not music["asset"]:   # format tanpa musik → musik klip (mis. hasil edit otomatis) tetap dipakai
         music = dict(edit.get("music") or music)
     hook = {**style["hook"], "text": hook_text, "enabled": style["hook"]["enabled"] and bool(hook_text)}
-    return {**edit, "vignette": dict(style["vignette"]), "marks": marks, "music": music, "hook": hook}
+    own = edit.get("cinematic") or cinematic.DEFAULT
+    style_cinematic = style.get("cinematic") or cinematic.DEFAULT
+    return {**edit, "vignette": dict(style["vignette"]), "marks": marks, "music": music, "hook": hook,
+            "cinematic": {**style_cinematic, "name": own["name"], "role": own["role"], "beats": own["beats"],
+                          "scenes": own["scenes"]},
+            "frame": dict(style.get("frame") or clip_frame.DEFAULT)}
 
 
 def sanitize_transcript(raw) -> list | None:

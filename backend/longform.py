@@ -1,10 +1,10 @@
 """
 Video panjang tanpa wajah (16:9) dari satu podcast.
 
-1. Naskah: Gemini menulis narasi per adegan dari transkrip (dibagi per bab), disisipi kutipan asli podcast.
-2. Suara: Gemini TTS per adegan, atau rekaman suara sendiri per adegan.
-3. Visual: video stok Pixabay/Pexels per adegan (kata kunci dari naskah); adegan kutipan memakai potongan podcast.
-4. Render: tiap adegan dirender 1920x1080 dengan subtitle & judul bab, lalu disambung jadi satu video,
+1. Naskah: Gemini menulis narasi per adegan. Podcast hanya bahan riset; sudut pandang pembuat video jadi tulang punggungnya.
+2. Suara: rekaman suara sendiri per adegan (Gemini TTS masih tersedia lewat API).
+3. Visual: video stok Pixabay/Pexels per adegan, sebagian dengan animasi transparan di atasnya (motion_scenes.py).
+4. Render: tiap adegan dirender 1920x1080 dengan subtitle & judul bab, lalu disambung dengan transisi,
    lengkap dengan daftar bab (timestamp) dan kredit untuk deskripsi YouTube.
 
 Proyek disimpan per pengguna per video di <folder klip>/longform/project.json.
@@ -13,6 +13,7 @@ Proyek disimpan per pengguna per video di <folder klip>/longform/project.json.
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -23,6 +24,7 @@ import wave
 
 import requests
 
+import motion_scenes
 from caption_styles import FONTS
 from render_pipeline import _fonts_dir_for, _remove_quietly, _run_ffmpeg
 
@@ -40,7 +42,8 @@ WORDS_PER_MINUTE = 115          # tempo Gemini TTS bahasa Indonesia (terukur ±1
 WORDS_PER_SCENE = 24            # rata-rata kata per adegan narasi hasil Gemini
 # Struktur naskah per durasi: (jumlah bab, adegan narasi per bab, jumlah kutipan). Gemini mengabaikan target
 # jumlah kata, tapi patuh pada jumlah adegan yang konkret.
-SCRIPT_SHAPE = {5: (4, 5, 3), 8: (5, 7, 4), 12: (6, 8, 5)}
+# Kutipan sengaja sedikit: video yang banyak memakai potongan podcast orang berisiko dianggap konten daur ulang.
+SCRIPT_SHAPE = {5: (4, 5, 1), 8: (5, 7, 2), 12: (6, 8, 3)}
 MAX_SCENES = 80
 TEXT_MAX = 600
 QUOTE_MIN, QUOTE_MAX = 4.0, 25.0
@@ -163,7 +166,8 @@ def sanitize_scenes(raw, previous: dict | None, source_duration: float | None) -
             text = _clean(item.get("text"), TEXT_MAX)
             if not text:
                 continue
-            scene.update({"text": text, "query": _clean(item.get("query"), 60), "visual": sanitize_visual(item.get("visual"))})
+            scene.update({"text": text, "query": _clean(item.get("query"), 60), "visual": sanitize_visual(item.get("visual")),
+                          "motion": motion_scenes.sanitize(item.get("motion"))})
             if old.get(sid, {}).get("audio"):
                 scene["audio"] = old[sid]["audio"]
         scenes.append(scene)
@@ -275,8 +279,14 @@ def voice_rules(channel: str) -> str:
 
 SCRIPT_PROMPT = """
 Kamu penulis naskah video YouTube edukasi "faceless" (tanpa wajah, narasi + visual stok) untuk audiens Indonesia.
-Dari transkrip podcast berikut, tulis naskah video panjang ±{MINUTES} menit yang berdiri sendiri: penonton yang
-belum menonton podcastnya langsung paham dan merasa dapat ilmu.
+Tulis naskah video panjang ±{MINUTES} menit dengan analisis dan sudut pandang pembuat video sendiri.
+Transkrip podcast berikut HANYA bahan riset, bukan isi yang dirangkum. Video harus punya nilai baru: penonton mendapat
+pemahaman yang tidak mereka dapat hanya dengan menonton podcastnya.
+
+SUDUT PANDANG (WAJIB)
+- Sudut pandang pembuat video adalah tulang punggung naskah: setiap bab harus mendukung, menguji, atau mengembangkannya.
+- Susun argumen sendiri. JANGAN mengikuti urutan podcast dan JANGAN menceritakan ulang isi percakapan.
+- Boleh setuju atau tidak setuju dengan narasumber, dan sebut narasumber hanya saat mengutip gagasannya.
 
 PANJANG (WAJIB DIPATUHI, ini video panjang, bukan ringkasan singkat):
 - TEPAT {CHAPTERS} bab, masing-masing {PER_CHAPTER} adegan narasi, ditambah 2 adegan pembuka dan 2 adegan penutup.
@@ -291,11 +301,11 @@ ADEGAN NARASI (kind "narration")
 - text: 2-3 kalimat lisan sehari-hari, 25-40 kata, enak dibacakan (angka ditulis seperti diucapkan bila perlu).
 - query: 2-4 kata kunci BAHASA INGGRIS untuk mencari video stok yang cocok secara visual
   (mis. "stock market screen", "young man thinking night", "indonesian city traffic"). Hindari nama orang/merek.
-- Narasi menjelaskan & merangkum pemikiran narasumber dengan kata-katamu sendiri, sebut nama narasumber
-  bila relevan. DILARANG mengarang fakta, angka, atau klaim yang tidak ada di transkrip.
+- Tulis dengan kata-kata sendiri, bukan parafrase kalimat per kalimat. Pendapat harus jelas terbaca sebagai pendapat.
+  DILARANG mengarang fakta, angka, atau klaim yang tidak ada di transkrip.
 
 ADEGAN KUTIPAN (kind "quote")
-- {QUOTES} kutipan asli podcast yang paling kuat (dari bagian video yang berbeda-beda), sebagai bukti/penegas narasi sebelumnya.
+- {QUOTES} kutipan asli podcast yang paling kuat, hanya sebagai bukti untuk argumen sebelumnya. Sesudahnya wajib ada tanggapan.
 - start_time & end_time diambil PERSIS dari timestamp transkrip (MM:SS), durasi 6-20 detik.
 - text: isi kutipan sesuai transkrip. query "".
 
@@ -401,7 +411,7 @@ def generate_script(transcript_lines: list, metadata: dict, minutes: int, focus:
         prompt = prompt.replace("{" + key + "}", str(value))
     user_text = (
         f"Judul podcast: {metadata.get('title', '')}\nChannel: {metadata.get('channel', '')}\n"
-        + (f"Fokus/sudut pandang yang diminta pembuat video: {focus}\n" if focus else "")
+        + (f"Sudut pandang pembuat video: {focus}\n" if focus else "")
         + f"\nTRANSKRIP:\n{_format_transcript(transcript_lines)}"
     )
     data = _call_gemini(prompt, user_text, api_key=api_key, schema=script_schema())
@@ -411,6 +421,7 @@ def generate_script(transcript_lines: list, metadata: dict, minutes: int, focus:
     if sum(1 for s in project["scenes"] if s["kind"] == "narration") < 3:
         raise ValueError("AI tidak menghasilkan naskah yang cukup. Coba lagi.")
     project["channel"] = channel
+    motion_scenes.plan(project["scenes"], api_key)
     return project
 
 
@@ -659,6 +670,10 @@ def _ass_text(text: str) -> str:
     return text.replace("\\", "").replace("{", "(").replace("}", ")").replace("\n", " ")
 
 
+def chapter_card_seconds(duration: float) -> float:
+    return min(2.6, max(1.2, duration - 0.2))
+
+
 def scene_ass(lines: list, duration: float, chapter: str = "", source_label: str = "") -> str:
     """ASS 1920x1080: subtitle di bawah, kartu judul bab di awal adegan, label sumber untuk kutipan."""
     font = FONTS["poppins-semibold"]
@@ -682,7 +697,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     events = []
     sub_from = 0.0
     if chapter:
-        card = min(2.6, max(1.2, duration - 0.2))
+        card = chapter_card_seconds(duration)
         shade = r"{\an7\pos(0,0)\1c&H000000&\1a&H60&\bord0\shad0\fad(200,300)\p1}" + f"m 0 0 l {W} 0 {W} {H} 0 {H}"
         events.append(f"Dialogue: 2,{_ass_time(0)},{_ass_time(card)},Chapter,,0,0,0,,{shade}")
         events.append(f"Dialogue: 3,{_ass_time(0)},{_ass_time(card)},Kicker,,0,0,0,,"
@@ -719,37 +734,86 @@ def quote_lines(transcript_lines: list, start: float, end: float) -> list:
 # ── Render ───────────────────────────────────────────────────
 
 # veryfast: ±3x lebih cepat dari medium; YouTube tetap meng-encode ulang, jadi selisih kualitasnya tak terlihat
-VIDEO_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-r", str(FPS),
+VIDEO_ARGS = ["-bf", "0", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-r", str(FPS),
               "-profile:v", "high", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
 AUDIO_ARGS = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
 LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
 COVER = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,fps={FPS}"
+TRANSITION_SECONDS = 0.5
+# Bergantian supaya tidak monoton; pindah bab memakai geser
+XFADE_INSIDE = ("fade", "fadeblack", "fade", "zoomin", "fade", "hblur")
+XFADE_CHAPTER = ("smoothleft", "smoothright", "slideup")
+MOTION_DIM = 0.5      # latar lebih gelap saat ada animasi di atasnya, supaya teksnya terbaca
+PLAIN_DIM = 0.1
+PAN_ZOOM = 1.08       # video latar digeser pelan supaya tidak terasa diam
 
 
-def _render_narration(scene: dict, audio_path: str, stock_path: str | None, workdir: str, index: int) -> tuple[str, float]:
-    duration = wav_duration(audio_path) + 0.35
-    lines = subtitle_lines(timed_words(scene["text"], speech_spans(audio_path, duration - 0.35)))
+def transition_overlaps(durations: list) -> list:
+    """Lama transisi antar dua adegan berurutan. Adegan yang terlalu pendek disambung tanpa transisi."""
+    minimum = TRANSITION_SECONDS * 2 + 0.2
+    return [TRANSITION_SECONDS if a >= minimum and b >= minimum else 0 for a, b in zip(durations, durations[1:])]
+
+
+def snap_frames(seconds: float) -> float:
+    """Bulatkan ke atas ke batas frame. Tanpa ini selisih video dan suara menumpuk di tiap adegan."""
+    return math.ceil(seconds * FPS - 1e-6) / FPS
+
+
+def _key_args(starts_after: float, duration: float) -> list:
+    """Keyframe tepat di batas potongan, supaya bagian tengah adegan bisa disalin tanpa encode ulang."""
+    points = [p for p in (starts_after, duration) if p > 0]
+    return ["-force_key_frames", ",".join(f"{p - 0.005:.3f}" for p in points)] if points else []
+
+
+def narration_seconds(audio_path: str) -> float:
+    return snap_frames(wav_duration(audio_path) + 0.35)
+
+
+def _render_narration(scene: dict, audio_path: str, stock_path: str | None, workdir: str, index: int,
+                      overlay: str | None = None, tail: float = 0.0, cut: float = 0.0) -> tuple[str, float]:
+    """tail = video berlanjut sesudah suara, untuk bahan transisi ke adegan berikutnya. overlay = animasi transparan."""
+    duration = narration_seconds(audio_path)
+    lines = subtitle_lines(timed_words(scene["text"], speech_spans(audio_path, wav_duration(audio_path))))
     ass_name = f"scene_{index:03d}.ass"
     with open(os.path.join(workdir, ass_name), "w", encoding="utf-8") as f:
         f.write(scene_ass(lines, duration, scene.get("chapter", "")))
     out = os.path.join(workdir, f"scene_{index:03d}.mp4")
+    total = duration + tail + (0.1 if tail else 0)   # sedikit lebih, supaya transisi pasti punya frame yang cukup
+    inputs = []
     if stock_path:
-        video_in = ["-stream_loop", "-1", "-i", stock_path]
-        look = f"{COVER},eq=brightness=-0.05:saturation=0.92"
+        inputs += ["-stream_loop", "-1", "-i", stock_path]
+        # Geser pelan, arahnya bergantian tiap adegan
+        wide, tall = int(W * PAN_ZOOM) // 2 * 2, int(H * PAN_ZOOM) // 2 * 2
+        travel = f"(iw-ow)*min(t/{total:.3f},1)"
+        x = travel if index % 2 else f"(iw-ow)-{travel}"
+        look = (f"scale={wide}:{tall}:force_original_aspect_ratio=increase,crop={wide}:{tall},setsar=1,fps={FPS},"
+                f"crop={W}:{H}:x='{x}':y='(ih-oh)/2',eq=saturation=0.92,"
+                f"drawbox=x=0:y=0:w=iw:h=ih:t=fill:color=black@{MOTION_DIM if overlay else PLAIN_DIM}")
     else:  # tanpa visual stok: latar gelap polos
-        video_in = ["-f", "lavfi", "-i", f"color=c=0x16131f:s={W}x{H}:r={FPS}"]
+        inputs += ["-f", "lavfi", "-i", f"color=c=0x16131f:s={W}x{H}:r={FPS}"]
         look = "setsar=1"
-    graph = (f"[0:v]{look},ass={ass_name}:fontsdir={_fonts_dir_for(workdir)}[v];"
-             f"[1:a]aresample=48000,aformat=channel_layouts=stereo,apad,{LOUDNORM}[a]")
-    _run_ffmpeg(["ffmpeg", "-y", *video_in, "-i", audio_path, "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
-                 "-t", f"{duration:.3f}", *VIDEO_ARGS, *AUDIO_ARGS, os.path.basename(out)],
+    inputs += ["-i", audio_path]
+    graph = f"[0:v]{look}[base];"
+    label = "base"
+    if overlay:
+        # Kartu judul bab tampil lebih dulu, baru animasinya
+        delay = chapter_card_seconds(duration) if scene.get("chapter") else 0
+        inputs += ["-i", overlay]
+        graph += f"[2:v]setpts=PTS-STARTPTS+{delay:.3f}/TB[fg];[base][fg]overlay=0:0:eof_action=pass:format=auto[mixed];"
+        label = "mixed"
+    graph += (f"[{label}]ass={ass_name}:fontsdir={_fonts_dir_for(workdir)}[v];"
+              f"[1:a]aresample=48000,aformat=channel_layouts=stereo,apad,{LOUDNORM}[a]")
+    _run_ffmpeg(["ffmpeg", "-y", *inputs, "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
+                 "-t", f"{total:.3f}", *VIDEO_ARGS, *_key_args(cut, duration), *AUDIO_ARGS, os.path.basename(out)],
                 f"Adegan {index + 1} gagal dirender", cwd=workdir)
     return out, duration
 
 
-def _render_quote(scene: dict, source_path: str, transcript_lines: list, label: str, workdir: str, index: int) -> tuple[str, float]:
+def _render_quote(scene: dict, source_path: str, transcript_lines: list, label: str, workdir: str, index: int,
+                  tail: float = 0.0, cut: float = 0.0) -> tuple[str, float]:
     start, end = scene["start"], scene["end"]
-    duration = end - start
+    duration = snap_frames(end - start)
+    total = duration + tail + (0.1 if tail else 0)
     lines = quote_lines(transcript_lines, start, end)
     ass_name = f"scene_{index:03d}.ass"
     with open(os.path.join(workdir, ass_name), "w", encoding="utf-8") as f:
@@ -757,14 +821,60 @@ def _render_quote(scene: dict, source_path: str, transcript_lines: list, label: 
     out = os.path.join(workdir, f"scene_{index:03d}.mp4")
     graph = (f"[0:v]split[a][b];[a]{COVER},boxblur=24:2,eq=brightness=-0.18[bg];"
              f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease,setsar=1[fg];"
-             f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps={FPS},ass={ass_name}:fontsdir={_fonts_dir_for(workdir)}[v];"
+             f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps={FPS},tpad=stop_mode=clone:stop_duration=1,ass={ass_name}:fontsdir={_fonts_dir_for(workdir)}[v];"
              f"[0:a]aresample=48000,aformat=channel_layouts=stereo,afade=t=in:d=0.15,"
-             f"afade=t=out:st={max(0.0, duration - 0.25):.3f}:d=0.25,{LOUDNORM}[a]")
-    _run_ffmpeg(["ffmpeg", "-y", "-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", source_path,
-                 "-filter_complex", graph, "-map", "[v]", "-map", "[a]", "-t", f"{duration:.3f}",
-                 *VIDEO_ARGS, *AUDIO_ARGS, os.path.basename(out)],
+             f"afade=t=out:st={max(0.0, duration - 0.25):.3f}:d=0.25,apad,{LOUDNORM}[a]")
+    _run_ffmpeg(["ffmpeg", "-y", "-ss", f"{start:.3f}", "-t", f"{total:.3f}", "-i", source_path,
+                 "-filter_complex", graph, "-map", "[v]", "-map", "[a]", "-t", f"{total:.3f}",
+                 *VIDEO_ARGS, *_key_args(cut, duration), *AUDIO_ARGS, os.path.basename(out)],
                 f"Kutipan di adegan {index + 1} gagal dirender", cwd=workdir)
     return out, duration
+
+
+def _stitch(parts: list, durations: list, overlaps: list, chapter_starts: list, workdir: str, out_path: str):
+    """
+    Sambung adegan dengan transisi. Tiap adegan punya video lebih panjang dari suaranya, jadi transisi memakai sisa itu
+    dan suara tetap utuh: waktu bab tidak bergeser. Bagian tengah adegan disalin tanpa encode ulang.
+    """
+    pieces, inside, chapter = [], 0, 0
+    for i, (part, duration) in enumerate(zip(parts, durations)):
+        cut = overlaps[i - 1] if i > 0 else 0
+        body = f"body_{i:03d}.mp4"
+        # Jumlah frame, bukan detik: inilah yang menjaga video tetap sepanjang suaranya
+        frames = round((duration - cut) * FPS)
+        seek = ["-ss", f"{cut + 0.005:.3f}"] if cut else []
+        _run_ffmpeg(["ffmpeg", "-y", *seek, "-i", os.path.basename(part), "-frames:v", str(frames),
+                     "-an", "-c:v", "copy", "-avoid_negative_ts", "make_zero", body], "Gagal memotong adegan", cwd=workdir)
+        pieces.append(body)
+        if i < len(overlaps) and overlaps[i] > 0:
+            if chapter_starts[i + 1]:
+                effect = XFADE_CHAPTER[chapter % len(XFADE_CHAPTER)]
+                chapter += 1
+            else:
+                effect = XFADE_INSIDE[inside % len(XFADE_INSIDE)]
+                inside += 1
+            step = f"trans_{i:03d}.mp4"
+            length = overlaps[i]
+            prepare = f"fps={FPS},settb=AVTB,setpts=PTS-STARTPTS"
+            graph = (f"[0:v]{prepare}[a];[1:v]{prepare}[b];"
+                     f"[a][b]xfade=transition={effect}:duration={length:.3f}:offset=0[v]")
+            _run_ffmpeg(["ffmpeg", "-y", "-ss", f"{duration - 0.001:.3f}", "-i", os.path.basename(part),
+                         "-i", os.path.basename(parts[i + 1]), "-filter_complex", graph, "-map", "[v]",
+                         "-frames:v", str(round(length * FPS)), "-an", *VIDEO_ARGS, step], "Gagal membuat transisi", cwd=workdir)
+            pieces.append(step)
+    audio_parts = []
+    for i, (part, duration) in enumerate(zip(parts, durations)):
+        name = f"audio_{i:03d}.wav"
+        _run_ffmpeg(["ffmpeg", "-y", "-i", os.path.basename(part), "-t", f"{duration:.3f}", "-vn", "-c:a", "pcm_s16le", name],
+                    "Gagal menyiapkan suara", cwd=workdir)
+        audio_parts.append(name)
+    with open(os.path.join(workdir, "video.txt"), "w", encoding="utf-8") as f:
+        f.writelines(f"file '{name}'\n" for name in pieces)
+    with open(os.path.join(workdir, "audio.txt"), "w", encoding="utf-8") as f:
+        f.writelines(f"file '{name}'\n" for name in audio_parts)
+    _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "video.txt", "-f", "concat", "-safe", "0", "-i", "audio.txt",
+                 "-map", "0:v", "-map", "1:a", "-c:v", "copy", *AUDIO_ARGS, "-movflags", "+faststart", out_path],
+                "Gagal menyambung adegan", cwd=workdir)
 
 
 def render(project: dict, folder: str, source_path: str | None, transcript_lines: list, label: str,
@@ -775,14 +885,37 @@ def render(project: dict, folder: str, source_path: str | None, transcript_lines
     try:
         parts, durations = [], []
         scenes = project["scenes"]
+        planned = [snap_frames(s["end"] - s["start"]) if s["kind"] == "quote" else narration_seconds(os.path.join(folder, s["audio"]["file"]))
+                   for s in scenes]
+        overlaps = transition_overlaps(planned)
+
+        # Animasi dulu: semua sekali jalan supaya browser tidak dibuka ulang untuk tiap adegan
+        wanted = []
+        for i, scene in enumerate(scenes):
+            if scene["kind"] == "narration" and scene.get("motion"):
+                delay = chapter_card_seconds(planned[i]) if scene.get("chapter") else 0
+                if planned[i] - delay >= motion_scenes.MIN_SECONDS:
+                    wanted.append({"id": f"motion_{i:03d}", "motion": scene["motion"], "seconds": planned[i] - delay})
+
+        def motion_progress(done, total):
+            if callback:
+                callback({"status": "running", "progress": int(35 * done / max(1, total)), "message": f"Animasi {done} dari {total}"})
+
+        if wanted and callback:
+            callback({"status": "running", "progress": 1, "message": f"Membuat {len(wanted)} animasi"})
+        overlays = motion_scenes.render_overlays(wanted, workdir, motion_progress)
+        base = 35 if wanted else 0
+
         for i, scene in enumerate(scenes):
             if callback:
-                callback({"status": "running", "progress": int(90 * i / max(1, len(scenes))),
+                callback({"status": "running", "progress": base + int((88 - base) * i / max(1, len(scenes))),
                           "message": f"Adegan {i + 1} dari {len(scenes)}"})
+            tail = overlaps[i] if i < len(overlaps) else 0
+            cut = overlaps[i - 1] if i > 0 else 0
             if scene["kind"] == "quote":
                 if not source_path:
                     raise ValueError("Adegan kutipan butuh file video podcast. Upload videonya dulu atau hapus kutipannya.")
-                part, dur = _render_quote(scene, source_path, transcript_lines, label, workdir, i)
+                part, dur = _render_quote(scene, source_path, transcript_lines, label, workdir, i, tail, cut)
             else:
                 stock = None
                 if scene.get("visual"):
@@ -790,17 +923,14 @@ def render(project: dict, folder: str, source_path: str | None, transcript_lines
                         stock = download_stock(scene["visual"])
                     except Exception as e:
                         print(f"[Longform] Video stok gagal diunduh, pakai latar polos: {e}")
-                part, dur = _render_narration(scene, os.path.join(folder, scene["audio"]["file"]), stock, workdir, i)
+                part, dur = _render_narration(scene, os.path.join(folder, scene["audio"]["file"]), stock, workdir, i,
+                                              overlays.get(f"motion_{i:03d}"), tail, cut)
             parts.append(part)
             durations.append(dur)
         if callback:
-            callback({"status": "running", "progress": 92, "message": "Menyambung adegan"})
-        list_path = os.path.join(workdir, "parts.txt")
-        with open(list_path, "w", encoding="utf-8") as f:
-            f.writelines(f"file '{os.path.basename(p)}'\n" for p in parts)
+            callback({"status": "running", "progress": 90, "message": "Menyambung adegan"})
         tmp_out = os.path.join(folder, out_name + ".rendering.mp4")
-        _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "parts.txt", "-c", "copy",
-                     "-movflags", "+faststart", os.path.abspath(tmp_out)], "Gagal menyambung adegan", cwd=workdir)
+        _stitch(parts, durations, overlaps, [bool(s.get("chapter")) for s in scenes], workdir, os.path.abspath(tmp_out))
         os.replace(tmp_out, os.path.join(folder, out_name))
         return {"filename": out_name, "durations": durations}
     finally:
