@@ -344,19 +344,27 @@ Kembalikan HANYA JSON:
 
 SHORT_SCRIPT_PROMPT = """
 Kamu penulis naskah video pendek "faceless" untuk TikTok, YouTube Shorts, dan Reels, audiens Indonesia.
-Tulis naskah ±{SECONDS} detik tentang topik di bawah, berdasarkan SUMBER BERITA yang diberikan.
+Tulis naskah {SECONDS} detik tentang topik di bawah. {BASIS}
 
-PANJANG (WAJIB): 4-8 adegan, total maksimal {WORDS} kata. Satu video hanya untuk satu ide.
+PANJANG (WAJIB): 6-9 adegan, total maksimal {WORDS} kata. Hitung jumlah katanya sebelum menjawab. Satu video hanya untuk satu ide.
 
 STRUKTUR
 - Adegan 1 = hook: kalimat pertama langsung ke angka, kejutan, atau pertanyaan paling tajam. Tanpa salam, tanpa nama channel.
-- Tengah = bangun rasa penasaran, lalu bayar janji hook dengan fakta dari sumber dan dampaknya ke penonton.
+- Tengah = bangun rasa penasaran, lalu bayar janji hook dengan fakta dan dampaknya ke penonton.
 - Adegan terakhir = satu pertanyaan spesifik yang memancing komentar, diakhiri tanda tanya.
+- Sambungkan adegan dengan "tapi" atau "makanya", bukan "terus". Tiap fakta harus memicu fakta berikutnya.
+- Sekali di tengah, lempar pertanyaan dan tunda jawabannya satu adegan, supaya penonton ikut menebak.
+- Campur kalimat sangat pendek dengan kalimat yang lebih panjang supaya tidak monoton.
 - DILARANG memberi tanda video akan selesai: "sekian", "terima kasih sudah menonton", ajakan like, follow, atau subscribe.
 
+ISI YANG BELUM BANYAK DIKETAHUI
+- Tiap video wajib memberi minimal satu hal yang kebanyakan orang belum tahu: mekanisme di balik layar, angka yang mengejutkan, atau anggapan umum yang ternyata keliru.
+- Hindari tips umum yang sudah sering didengar, seperti "kurangi jajan" atau "buat anggaran".
+- Hook menjanjikan hal baru itu, dan isi video wajib membayarnya.
+
 AKURASI (PALING PENTING)
-- Fakta terbaru (angka, tanggal, nama, kejadian) HANYA dari SUMBER BERITA. Sebut medianya secara lisan untuk fakta penting.
-- JANGAN menambah klaim atau angka spesifik yang tidak ada di sumber. Jangan menuduh orang tertentu melakukan kejahatan.
+{ACCURACY}
+- Jangan menuduh orang tertentu melakukan kejahatan.
 - Untuk topik investasi, jangan mengajak membeli atau menjual.
 
 GAYA BICARA
@@ -364,7 +372,7 @@ GAYA BICARA
 - DILARANG frasa klise AI: "mari kita bahas", "di era digital ini", "perlu diingat bahwa", "kesimpulannya", "menariknya".
 
 ADEGAN (semua kind "narration", chapter "", start_time "", end_time "")
-- text: 1-2 kalimat lisan, 6-22 kata. Tulis angka dengan digit persis seperti di sumber (38 klub, 2026, Rp2,5 juta), jangan dieja.
+- text: 1-2 kalimat lisan, 12-22 kata. Tulis angka dengan digit persis seperti di sumber (38 klub, 2026, Rp2,5 juta), jangan dieja.
 - query: 2-4 kata kunci BAHASA INGGRIS untuk video stok yang cocok, tanpa nama orang atau merek.
 
 Juga tulis title (maks 60 karakter, tanpa emoji), summary (1-2 kalimat, tanpa hashtag), dan thumbnail_texts (2-3 pilihan teks sampul, maks 28 huruf).
@@ -377,23 +385,46 @@ def _word_count(project: dict) -> int:
     return sum(len(s["text"].split()) for s in project["scenes"])
 
 
-def _short_script(topic: str, angle: str, user_text: str, seconds: int, api_key: str | None) -> dict:
+SHORT_BASIS_NEWS = "Pakai SUMBER BERITA yang diberikan sebagai dasar fakta."
+SHORT_BASIS_OWN = "Tidak ada sumber berita: tulis dari pengetahuan umum yang mapan dan bisa dicek."
+SHORT_ACCURACY_NEWS = """- Fakta terbaru (angka, tanggal, nama, kejadian) HANYA dari SUMBER BERITA. Sebut medianya secara lisan untuk fakta penting.
+- JANGAN menambah klaim atau angka spesifik yang tidak ada di sumber."""
+SHORT_ACCURACY_OWN = """- Pakai hanya fakta yang mapan dan mudah dicek, misalnya cara kerja suatu sistem, aturan yang berlaku umum, atau sejarah yang terdokumentasi.
+- JANGAN mengarang angka, tanggal, nama, atau kejadian terbaru. Kalau angka tidak pasti, pakai kata seperti "sekitar" atau hilangkan angkanya.
+- Jangan menyebut media atau laporan tertentu sebagai sumber."""
+
+
+def _short_script(topic: str, angle: str, user_text: str, seconds: int, api_key: str | None, has_sources: bool = True) -> dict:
     """Naskah yang kepanjangan diminta ulang sekali, karena batas 60 detik adalah syarat format ini."""
     from gemini_service import _call_gemini
-    words = klik_render.target_words(seconds)
-    prompt = SHORT_SCRIPT_PROMPT.replace("{SECONDS}", str(seconds)).replace("{WORDS}", str(words))
-    for attempt in range(2):
-        note = "" if not attempt else f"\n\nNaskah sebelumnya terlalu panjang. Tulis ulang maksimal {words} kata."
+    words = klik_render.target_words(klik_render.MAX_SECONDS)
+    least = klik_render.target_words(klik_render.MIN_SECONDS)
+    prompt = (SHORT_SCRIPT_PROMPT.replace("{SECONDS}", f"{klik_render.MIN_SECONDS}-{klik_render.MAX_SECONDS}").replace("{WORDS}", str(words))
+              .replace("{BASIS}", SHORT_BASIS_NEWS if has_sources else SHORT_BASIS_OWN)
+              .replace("{ACCURACY}", SHORT_ACCURACY_NEWS if has_sources else SHORT_ACCURACY_OWN))
+    prompt = prompt.replace("total maksimal {WORDS} kata".replace("{WORDS}", str(words)), f"total {least}-{words} kata")
+    note = ""
+    best = None
+    for attempt in range(3):
         data = _call_gemini(prompt, user_text + note, api_key=api_key, schema=longform.script_schema(4))
         if not isinstance(data, dict):
             raise ValueError("Format naskah dari AI tidak sesuai.")
         data["scenes"] = [s for s in data.get("scenes") or [] if isinstance(s, dict) and s.get("kind") != "quote"]
         project = longform.script_from_ai(data, [])
-        if len(project["scenes"]) >= 3 and _word_count(project) <= words * 1.15:
-            for scene in project["scenes"]:
-                scene["chapter"] = ""
+        count = _word_count(project)
+        for scene in project["scenes"]:
+            scene["chapter"] = ""
+        if len(project["scenes"]) >= 3 and least * 0.85 <= count <= words * 1.15:
             return project
-    raise ValueError("Naskah dari AI masih terlalu panjang untuk video pendek. Coba lagi.")
+        # Simpan yang paling dekat dengan rentang, supaya tidak gagal hanya karena selisih beberapa kata
+        miss = least - count if count < least else count - words
+        if len(project["scenes"]) >= 3 and (best is None or miss < best[0]):
+            best = (miss, project, count)
+        note = f"\n\nNaskah sebelumnya {count} kata. Tulis ulang dengan total {least}-{words} kata, 6-9 adegan."
+    if best and least * 0.7 <= best[2] <= words * 1.25:
+        print(f"[Topik] Naskah video pendek {best[2]} kata, sedikit di luar target {least}-{words}")
+        return best[1]
+    raise ValueError("Panjang naskah dari AI belum pas untuk video 45-60 detik. Coba lagi.")
 
 
 def generate_script(topic: str, angle: str, sources: list, minutes: int, api_key: str | None = None,
@@ -406,11 +437,12 @@ def generate_script(topic: str, angle: str, sources: list, minutes: int, api_key
     for i, (src, text) in enumerate(zip(sources, texts)):
         blocks.append(f"[{i + 1}] {src['title']} — {src['source']} ({src['date']})\n{src['url']}\n"
                       + (text or "(isi artikel tidak bisa dibaca; pakai judulnya saja, jangan mengarang isinya)"))
-    if not any(texts):
+    if sources and not any(texts):
         print("[Topik] Tidak ada isi artikel yang terbaca, naskah hanya dari judul berita")
     if seconds:
-        user_text = f"TOPIK: {topic}\n" + (f"SUDUT PANDANG: {angle}\n" if angle else "") + "\nSUMBER BERITA:\n\n" + "\n\n".join(blocks)
-        project = _short_script(topic, angle, user_text, seconds, api_key)
+        user_text = f"TOPIK: {topic}\n" + (f"SUDUT PANDANG: {angle}\n" if angle else "")
+        user_text += ("\nSUMBER BERITA:\n\n" + "\n\n".join(blocks)) if sources else "\nSUMBER BERITA: tidak ada, topik pilihan sendiri."
+        project = _short_script(topic, angle, user_text, seconds, api_key, bool(sources))
         project.update({"format": klik_render.SHORT, "seconds": seconds, "topic": longform._clean(topic, 200), "angle": longform._clean(angle, 400),
                         "sources": sources, "read_sources": sum(1 for t in texts if t), "channel": channel})
         return project

@@ -19,9 +19,14 @@ interface Props {
   onChange: (patch: Partial<EditRecipe['cinematic']>, turnHookOff?: boolean) => void
 }
 
+const HIGHLIGHTS = [
+  { value: '#F57C1A', label: 'oranye' }, { value: '#FFD21E', label: 'kuning' }, { value: '#FFFFFF', label: 'putih' },
+  { value: '#FF4438', label: 'merah' }, { value: '#3DDC84', label: 'hijau' }, { value: '#3D9BFF', label: 'biru' },
+]
+
 const fieldClass = 'field h-10 w-full bg-transparent text-sm text-ink placeholder:text-ink-faint outline-none'
 
-/** Preset Cinematic: warna, zoom, teks kata kunci, angka besar, dan nama pembicara. */
+/** Preset Cinematic: warna, teks kata per kata, nama pembicara, dan daftar adegan. */
 export default function CinematicPanel({ videoId, clipKey, edit, disabled, playhead, onChange }: Props) {
   const cinematic = edit.cinematic
   const [planning, setPlanning] = useState(false)
@@ -58,11 +63,22 @@ export default function CinematicPanel({ videoId, clipKey, edit, disabled, playh
       <Toggle label="Pakai gaya Cinematic" checked={cinematic.enabled} onChange={toggle} />
       {cinematic.enabled && (
         <>
-          <p className="text-ink-muted">Teks kata kunci menggantikan caption per kata dan hook. Warna, zoom, dan teks ini baru terlihat di hasil render.</p>
+          <p className="text-ink-muted">Teks kata kunci muncul kata per kata dan menggantikan caption serta hook. Warna, adegan, dan teks ini baru terlihat di hasil render.</p>
           <Range label="Kekuatan warna" value={cinematic.grade} min={0} max={100} onChange={grade => onChange({ grade })} format={v => `${v}%`} />
-          <Toggle label="Zoom ke pembicara" checked={cinematic.zoom} onChange={zoom => onChange({ zoom })} />
-          <Toggle label="Transisi glitch antar adegan" checked={cinematic.glitch} onChange={glitch => onChange({ glitch })} />
-          <Toggle label="Efek suara di tiap transisi" checked={cinematic.sfx} onChange={sfx => onChange({ sfx })} />
+          <div>
+            <p className="text-ink">Warna teks highlight</p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              {HIGHLIGHTS.map(color => (
+                <button key={color.value} type="button" aria-label={`Warna ${color.label}`} aria-pressed={cinematic.highlight === color.value} title={color.label}
+                  onClick={() => onChange({ highlight: color.value })} style={{ background: color.value }}
+                  className={`size-11 rounded-md border-2 ${cinematic.highlight === color.value ? 'border-ink' : 'border-rule'}`} />
+              ))}
+              <label className="field h-11 cursor-pointer gap-2 px-2">
+                <span className="text-ink-muted">Warna lain</span>
+                <input type="color" value={cinematic.highlight} onChange={e => onChange({ highlight: e.target.value.toUpperCase() })} aria-label="Pilih warna lain" className="size-7 cursor-pointer bg-transparent" />
+              </label>
+            </div>
+          </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block">
@@ -92,12 +108,14 @@ export default function CinematicPanel({ videoId, clipKey, edit, disabled, playh
 
           <ul className="space-y-2">
             {visible.map(({ beat, index }) => (
-              <li key={`${beat.start}-${index}`} className="grid grid-cols-[3rem_minmax(0,1fr)_minmax(0,1.3fr)_2.75rem] items-center gap-2">
+              <li key={`${beat.start}-${index}`} className="grid grid-cols-[3rem_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1fr)_2.75rem] items-center gap-2">
                 <span className="timecode text-xs text-ink-muted">{(beat.start - edit.start).toFixed(1)}s</span>
                 <input aria-label={`Teks kecil pada detik ${(beat.start - edit.start).toFixed(1)}`} placeholder="Teks kecil" value={beat.lead} maxLength={50}
                   onChange={e => setBeat(index, { lead: e.target.value })} className={fieldClass} />
                 <input aria-label={`Teks besar pada detik ${(beat.start - edit.start).toFixed(1)}`} value={beat.main} maxLength={40}
                   onChange={e => setBeat(index, { main: e.target.value })} className={`${fieldClass} font-semibold`} />
+                <input aria-label={`Teks penutup pada detik ${(beat.start - edit.start).toFixed(1)}`} placeholder="Teks penutup" value={beat.tail ?? ''} maxLength={50}
+                  onChange={e => setBeat(index, { tail: e.target.value })} className={fieldClass} />
                 <button type="button" aria-label={`Hapus teks "${beat.main}"`} onClick={() => onChange({ beats: cinematic.beats.filter((_, i) => i !== index) })} className="icon-btn tap">
                   <Trash2 className="size-4" aria-hidden />
                 </button>

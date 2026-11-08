@@ -52,7 +52,7 @@ def test_beats_do_not_overlap():
 def test_filters_and_overlay():
     assert cinematic.grade_filter(0) is None and "colorbalance" in cinematic.grade_filter(70)
     beats = [{"start": i * 2.0, "end": i * 2.0 + 1.5, "lead": "", "main": "kata", "kind": "phrase"} for i in range(6)]
-    chain = cinematic.zoom_filter(beats, 12, 1080, 1920)
+    chain = cinematic.zoom_filter([{"start": 2.0, "end": 4.0, "look": "zoom"}], 12, 1080, 1920)
     assert "zoompan" in chain and "s=1080x1920" in chain
     text = cinematic.overlay_ass({"name": "Budi", "role": "Founder"}, beats, 12)
     assert "Instrument Serif" in text and "Budi" in text and "Founder" in text
@@ -101,3 +101,42 @@ def test_fill_gaps_never_overlaps():
     assert len(beats) > len(ai)
     for a, b in zip(beats, beats[1:]):
         assert a["end"] <= b["start"]
+
+
+def _words(*items):
+    return [{"start": float(i), "end": i + 0.8, "text": text, "stop": False} for i, text in enumerate(items)]
+
+
+def test_tail_words_become_small_closing_line_and_reveal_in_order():
+    words = _words("cuman", "tiga", "hal", "yang", "lu", "lakuin")
+    beat = cinematic._make_beat(words, 0, 1, 2, 5)
+    assert (beat["lead"], beat["main"], beat["tail"]) == ("cuman", "tiga hal", "yang lu lakuin")
+    assert beat["main_at"] == 1.0 and beat["tail_at"] == 3.0 and beat["end"] == 5.8
+    # Satu kata sisa tidak jadi baris sendiri
+    short = cinematic._make_beat(_words("tiga", "hal", "ya"), 0, 0, 1, 2)
+    assert "tail" not in short and short["end"] == 1.8
+    moved = cinematic.relative_beats([beat], 1.0, 30)[0]
+    assert moved["main_at"] == 0.0 and moved["tail_at"] == 2.0
+    kept = cinematic.sanitize({"beats": [beat]})["beats"][0]
+    assert kept["tail"] == "yang lu lakuin" and kept["tail_at"] == 3.0
+
+
+def test_layouts_change_and_fit_the_text():
+    beats = [{"start": 0, "end": 1, "lead": "a", "main": "kata", "kind": "phrase"} for _ in range(6)]
+    assert len({cinematic.beat_layout(b, i) for i, b in enumerate(beats)}) >= 4
+    assert cinematic.beat_layout({"lead": "", "main": "2022", "kind": "number"}, 0) == "hero"
+    assert cinematic.beat_layout({"lead": "", "main": "dua kata", "kind": "phrase"}, 5) == "stack"
+    assert cinematic.beat_layout({"lead": "", "main": "kata", "kind": "phrase"}, 2) == "serif"
+    assert cinematic.beat_layout({"lead": "", "main": "teks yang sangat panjang", "kind": "phrase"}, 1) == "stack"
+
+
+def test_each_line_appears_when_spoken_and_stays_in_frame():
+    beat = {"start": 1.0, "end": 4.0, "lead": "cuman", "main": "tiga hal", "kind": "phrase", "tail": "yang lu lakuin", "main_at": 1.5, "tail_at": 2.5}
+    text = cinematic.overlay_ass({}, [beat], 10)
+    lines = [line for line in text.splitlines() if line.startswith("Dialogue")]
+    assert len(lines) == 3
+    assert ["0:00:01.00", "0:00:01.50", "0:00:02.50"] == [line.split(",")[1] for line in lines]
+    assert all(line.split(",")[2] == "0:00:04.00" for line in lines) and all("alpha&HFF&" in line for line in lines)
+    for index in range(6):
+        tiers = cinematic.beat_tiers(beat, index, 1180, "S", "B", "I", 1)
+        assert all(800 < tier["y"] < 1560 for tier in tiers) and [t["at"] for t in tiers] == [1.0, 1.5, 2.5]

@@ -13,7 +13,11 @@ def test_plan_changes_backdrop_by_content():
     assert kr.plan_scene(narration("Mana yang paling susah?"), 5, True, True)["template"] == "question"
     assert kr.plan_scene(narration("Bukan pertanyaan."), 5, True, False)["template"] == "statement"
     assert kr.plan_scene(narration(motion={"template": "data", "values": [1, 2]}), 1, False, True)["backdrop"] == "grid"
-    assert kr.plan_scene(narration(motion={"template": "number", "tone": "bad"}), 1, False, True)["backdrop"] == "red"
+    # Latar merah tetap memperlihatkan video stok bila ada, dan merah polos bila tidak ada
+    assert kr.plan_scene(narration(motion={"template": "number", "tone": "bad"}), 1, False, True)["backdrop"] == "redvideo"
+    assert kr.plan_scene(narration(motion={"template": "number", "tone": "bad"}), 1, False, False)["backdrop"] == "red"
+    # Bentuk "pilihan" tidak dipakai lagi
+    assert kr.plan_scene(narration(motion={"template": "choice", "title": "T", "options": ["A", "B"]}), 1, False, True) == {"template": "plain", "backdrop": "video"}
     assert kr.plan_scene(narration(motion={"template": "ledger"}), 1, False, True, "short")["backdrop"] == "video"
     assert kr.plan_scene(narration(motion={"template": "ledger"}), 1, False, True, "long")["backdrop"] == "paper"
     assert kr.plan_scene(narration(), 1, False, True) == {"template": "plain", "backdrop": "video"}
@@ -47,7 +51,6 @@ def test_audio_is_standard_format_and_many_cuts_share_one_effect():
     {"template": "share", "label": "Tiga pos", "percent": 70},
     {"template": "verdict", "question": "Gaji kurang?", "answer": "BELUM TENTU"},
     {"template": "picture", "name": "tire", "title": "Ban bocor"},
-    {"template": "choice", "title": "Pilih", "options": ["A", "B"], "pick": 1},
 ])
 def test_new_templates_are_kept(raw):
     assert ms.sanitize(raw)["template"] == raw["template"]
@@ -57,8 +60,7 @@ def test_incomplete_new_templates_are_rejected():
     assert ms.sanitize({"template": "ledger", "title": "T", "rows": [{"label": "a", "value": 1}]}) is None
     assert ms.sanitize({"template": "share", "label": "L", "percent": 170}) is None
     assert ms.sanitize({"template": "picture", "name": "naga", "title": "T"}) is None
-    assert ms.sanitize({"template": "choice", "title": "T", "options": ["A"]}) is None
-    assert ms.sanitize({"template": "choice", "title": "T", "options": ["A", "B"], "pick": 9})["pick"] == 0
+    assert ms.sanitize({"template": "choice", "title": "T", "options": ["A", "B"], "pick": 1}) is None
 
 
 def test_animated_numbers_must_be_spoken_including_scaled_forms():
@@ -118,23 +120,41 @@ def _script(words, count=4):
         {"kind": "narration", "chapter": "Bab", "text": " ".join(["kata"] * words), "query": "q", "start_time": "", "end_time": ""} for _ in range(count)]}
 
 
-def test_short_script_retries_when_too_long_then_gives_up(monkeypatch):
+def test_short_script_is_45_to_60_seconds_and_retries_once(monkeypatch):
     import gemini_service
-    answers = [_script(40), _script(10)]
-    calls = []
+    answers = [_script(40), _script(30)]   # 160 kata kepanjangan, lalu 120 kata pas
+    calls, prompts = [], []
 
     def fake(prompt, text, **kwargs):
         calls.append(text)
+        prompts.append(prompt)
         return answers.pop(0)
     monkeypatch.setattr(gemini_service, "_call_gemini", fake)
     monkeypatch.setattr(topics, "article_text", lambda url: "")
-    project = topics.generate_script("Topik", "", HEAD, 8, None, "Klik", 30)
-    assert project["format"] == "short" and project["seconds"] == 30
-    assert all(s["chapter"] == "" for s in project["scenes"]) and "terlalu panjang" in calls[1]
+    project = topics.generate_script("Topik", "", HEAD, 8, None, "Klik", 60)
+    assert project["format"] == "short" and project["seconds"] == 60
+    assert all(s["chapter"] == "" for s in project["scenes"]) and "160 kata" in calls[1]
+    assert "45-60 detik" in prompts[0] and "belum banyak diketahui".upper() in prompts[0].upper()
 
-    monkeypatch.setattr(gemini_service, "_call_gemini", lambda *a, **k: _script(40))
-    with pytest.raises(ValueError, match="terlalu panjang"):
-        topics.generate_script("Topik", "", HEAD, 8, None, "Klik", 30)
+    # Selisih sedikit tetap diterima (80 kata), terlalu jauh tetap ditolak (40 kata)
+    monkeypatch.setattr(gemini_service, "_call_gemini", lambda *a, **k: _script(20))
+    assert topics.generate_script("Topik", "", HEAD, 8, None, "Klik", 60)["scenes"]
+    monkeypatch.setattr(gemini_service, "_call_gemini", lambda *a, **k: _script(10))
+    with pytest.raises(ValueError, match="45-60 detik"):
+        topics.generate_script("Topik", "", HEAD, 8, None, "Klik", 60)
+
+
+def test_short_script_without_news_uses_general_knowledge(monkeypatch):
+    import gemini_service
+    seen = {}
+
+    def fake(prompt, text, **kwargs):
+        seen.update(prompt=prompt, text=text)
+        return _script(30)
+    monkeypatch.setattr(gemini_service, "_call_gemini", fake)
+    project = topics.generate_script("Kenapa harga tiket pesawat naik turun", "", [], 8, None, "Klik", 60)
+    assert project["sources"] == [] and "tidak ada" in seen["text"]
+    assert "JANGAN mengarang angka" in seen["prompt"] and "HANYA dari SUMBER BERITA" not in seen["prompt"]
 
 
 def test_long_klik_script_is_marked_and_stays_within_scene_limit(monkeypatch):
@@ -150,7 +170,7 @@ def test_long_klik_script_is_marked_and_stays_within_scene_limit(monkeypatch):
 def test_description_lists_sources():
     text = kr.short_description({"summary": "Ringkas.", "sources": [{"source": "Katadata", "title": "B", "url": "https://k.id/a"}]}, "Klik Digital ID")
     assert text == "Ringkas.\n\nSumber:\n- Katadata: https://k.id/a\n\nKlik Digital ID"
-    assert kr.SECONDS_CHOICES == (30, 45, 60) and kr.MAX_SECONDS == 60
+    assert kr.MIN_SECONDS == 45 and kr.MAX_SECONDS == 60
 
 
 def test_one_click_prepare_fills_voice_visual_and_thumbnail(monkeypatch, tmp_path):
@@ -238,13 +258,39 @@ def test_elevenlabs_errors_are_readable(status, body, expected):
     assert expected in el._error_message(res)
 
 
-def test_channel_voice_defaults_to_puck_and_elevenlabs_is_optional(monkeypatch):
+def test_short_voice_uses_free_key_then_falls_back_to_tier1(monkeypatch):
+    import longform
+    calls = []
+
+    def fake(text, voice, path, key):
+        calls.append(key)
+        if key == "gratis":
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+        return 2.0
+    monkeypatch.setattr(longform, "synthesize", fake)
+    monkeypatch.setenv(longform.FREE_KEY_ENV, "gratis")
+    assert longform.synthesize_short("Halo", {"voice": "Puck", "style": ""}, "x.wav") == 2.0 and calls == ["gratis", None]
+    calls.clear()
+    # Suara replikasi tidak ada di project gratis, jadi langsung memakai key Tier 1
+    assert longform.synthesize_short("Halo", {"voice": "voice_746ecuqzzudk", "style": ""}, "x.wav") == 2.0 and calls == [None]
+    calls.clear()
+    monkeypatch.delenv(longform.FREE_KEY_ENV)
+    longform.synthesize_short("Halo", {"voice": "Puck", "style": ""}, "x.wav")
+    assert calls == [None]
+
+
+def test_channel_voice_defaults_to_rafi_and_elevenlabs_is_optional(monkeypatch):
     import app as app_module
     import elevenlabs_tts as el
     monkeypatch.setenv("ELEVENLABS_API_KEY", "")
-    assert app_module._channel_voice()["voice"] == "Puck" and all(v["id"] not in el.VOICES for v in app_module._voice_options())
+    import longform
+    rafi = "voice_746ecuqzzudk"
+    assert longform.sanitize_voice({"voice": rafi})["voice"] == rafi and longform.sanitize_voice({})["voice"] == rafi
+    assert any(v["id"] == rafi and v["name"] == "Rafi" for v in app_module._voice_options())
+    assert app_module._channel_voice()["voice"] == rafi and app_module._channel_voice("Puck")["voice"] == "Puck"
+    assert all(v["id"] not in el.VOICES for v in app_module._voice_options())
     monkeypatch.setenv("ELEVENLABS_API_KEY", "abc")
-    assert app_module._channel_voice()["voice"] == "Puck" and app_module._voice_options()[0]["name"] == "ElevenLabs Liam"
+    assert app_module._channel_voice()["voice"] == rafi and app_module._voice_options()[0]["name"] == "ElevenLabs Liam"
     assert app_module._channel_voice(el.DEFAULT_VOICE)["voice"] == el.DEFAULT_VOICE
 
 

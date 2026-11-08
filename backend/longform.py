@@ -61,7 +61,9 @@ VOICES = {
     "Fenrir": "Bersemangat", "Zephyr": "Cerah", "Autonoe": "Cerah", "Aoede": "Ringan", "Leda": "Muda",
     "Pulcherrima": "Lugas",
 }
-DEFAULT_VOICE = "Charon"
+# Suara replikasi milik channel, tersimpan di project Gemini yang sama dengan GEMINI_API_KEY
+CUSTOM_VOICES = {"voice_746ecuqzzudk": "Rafi"}
+DEFAULT_VOICE = "voice_746ecuqzzudk"
 DEFAULT_STYLE = "narator video edukasi yang tenang, jelas, dan meyakinkan"
 
 _project_lock = threading.Lock()
@@ -178,7 +180,7 @@ def sanitize_scenes(raw, previous: dict | None, source_duration: float | None) -
 def sanitize_voice(raw) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     return {
-        "voice": raw.get("voice") if raw.get("voice") in VOICES or elevenlabs_tts.is_voice(raw.get("voice")) else DEFAULT_VOICE,
+        "voice": raw.get("voice") if raw.get("voice") in VOICES or raw.get("voice") in CUSTOM_VOICES or elevenlabs_tts.is_voice(raw.get("voice")) else DEFAULT_VOICE,
         "style": _clean(raw.get("style"), 160) or DEFAULT_STYLE,
     }
 
@@ -433,6 +435,29 @@ def wav_duration(path: str) -> float:
         return w.getnframes() / float(w.getframerate())
 
 
+# Video pendek memakai key Gemini gratis dengan suara bawaan, supaya kuota Tier 1 tersisa untuk suara Rafi di video panjang.
+# Suara replikasi hanya ada di project berbayar, jadi key gratis hanya dipakai untuk suara bawaan.
+FREE_KEY_ENV = "GEMINI_FREE_API_KEY"
+SHORT_VOICE = "Puck"
+
+
+def is_quota_error(error: Exception) -> bool:
+    text = str(error)
+    return "429" in text or "RESOURCE_EXHAUSTED" in text or "quota" in text.lower()
+
+
+def synthesize_short(text: str, voice: dict, out_path: str) -> float:
+    """Coba key gratis dulu, lalu key server bila kuota gratis habis atau key gratis gagal dipakai."""
+    free_key = os.getenv(FREE_KEY_ENV)
+    if free_key and voice["voice"] in VOICES:
+        try:
+            return synthesize(text, voice, out_path, free_key)
+        except Exception as e:
+            reason = "kuota gratis habis" if is_quota_error(e) else f"key gratis gagal: {e!r}"[:160]
+            print(f"[Suara] Pindah ke key Tier 1 ({reason})")
+    return synthesize(text, voice, out_path, None)
+
+
 def synthesize(text: str, voice: dict, out_path: str, api_key: str | None) -> float:
     """Suara satu adegan → WAV mono, lewat ElevenLabs atau Gemini TTS sesuai suara yang dipilih. Return durasi (detik)."""
     if elevenlabs_tts.is_voice(voice["voice"]):
@@ -462,6 +487,8 @@ def synthesize(text: str, voice: dict, out_path: str, api_key: str | None) -> fl
             return wav_duration(out_path)
         except Exception as e:  # satu kali coba lagi (server sibuk / respons kosong)
             last = e
+            if is_quota_error(e):
+                break
             if attempt == 0:
                 time.sleep(1.5)
     raise last
@@ -512,11 +539,13 @@ def _search_pixabay(query: str, per_page: int) -> list:
             continue
         thumb = next((v.get("thumbnail") for v in sizes if v.get("thumbnail")), "")
         user, user_id = hit.get("user") or "", hit.get("user_id")
-        results.append(sanitize_visual({
+        visual = sanitize_visual({
             "provider": "pixabay", "id": hit.get("id"), "link": best["link"], "thumb": thumb, "page": hit.get("pageURL"),
             "credit": user, "credit_url": f"https://pixabay.com/users/{user}-{user_id}/" if user and user_id else "",
             "duration": hit.get("duration"),
-        }))
+        })
+        # Label isi video, dipakai untuk memeriksa kecocokan B-roll dengan kalimatnya
+        results.append({**visual, "tags": _clean(hit.get("tags"), 200)} if visual else None)
     return results
 
 

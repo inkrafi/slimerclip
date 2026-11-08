@@ -125,7 +125,7 @@ def test_pixabay_search_picks_full_hd_landscape(monkeypatch):
     assert calls[0]["q"] == "city night" and longform.stock_provider() == "pixabay"
     assert results == [{"provider": "pixabay", "id": 11, "link": "https://cdn.pixabay.com/video/1920.mp4",
                         "thumb": "https://cdn.pixabay.com/video/t.jpg", "page": "https://pixabay.com/videos/kota-11/",
-                        "credit": "ana", "credit_url": "https://pixabay.com/users/ana-5/", "duration": 20}]
+                        "credit": "ana", "credit_url": "https://pixabay.com/users/ana-5/", "duration": 20, "tags": ""}]
     longform.search_stock("City Night")
     assert len(calls) == 1                                                       # hasil di-cache
 

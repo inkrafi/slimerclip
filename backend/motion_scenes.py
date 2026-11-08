@@ -12,7 +12,7 @@ import subprocess
 
 TEMPLATES = ("kinetic", "data", "compare", "flow")
 # Khusus video channel yang digambar penuh (backend/klik_render.py)
-KLIK_TEMPLATES = ("ledger", "number", "share", "verdict", "picture", "choice")
+KLIK_TEMPLATES = ("ledger", "number", "share", "verdict", "picture")
 PICTURES = ("phone", "tire", "bowl", "wallet", "laptop")
 MOTION_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "motion")
 TSX_CLI = os.path.join(MOTION_DIR, "node_modules", "tsx", "dist", "cli.mjs")
@@ -150,7 +150,6 @@ Template:
 - data: minimal dua angka yang berubah dari waktu ke waktu. title, values, prefix, suffix, caption, note.
 - verdict: narasi membantah sebuah anggapan. question (maks 40 karakter), answer (kata stempel, maks 20 karakter).
 - picture: gagasan yang cocok diberi gambar. name ("phone", "tire" untuk sesuatu yang pelan-pelan habis, "bowl" untuk makan, "wallet" untuk uang, "laptop" untuk kerja atau teknologi), title, note, screen (teks layar ponsel).
-- choice: ajakan memilih satu dari beberapa hal. title, options (2-6), pick (nomor mulai 0), result.
 - compare: dua hal dibandingkan. left dan right, masing-masing title dan items (1-3).
 - flow: 2-4 langkah berurutan. title dan steps (head maks 22 karakter, body maks 40 karakter).
 - kinetic: satu gagasan yang perlu ditegaskan. lead (opsional), words (1-3 baris, tiap baris maks 24 karakter), note (opsional).

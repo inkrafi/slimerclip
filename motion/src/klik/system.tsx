@@ -82,7 +82,7 @@ export function statusBar(view: View2D, y: number, halfWidth: number, note: stri
   </Node>);
 }
 
-export type Backdrop = 'grid' | 'paper' | 'red' | 'green' | `video:${string}`;
+export type Backdrop = 'grid' | 'paper' | 'red' | 'green' | `video:${string}` | `red:${string}`;
 
 /**
  * Latar yang berganti: kisi, kertas, warna penuh, atau video stok yang digelapkan.
@@ -105,7 +105,14 @@ export class Backdrops {
   private make(kind: Backdrop): Node {
     const size: [number, number] = [this.width, this.height];
     const node = new Node({});
-    if (kind.startsWith('video:')) {
+    if (kind.startsWith('red:')) {
+      /* Latar merah tembus pandang: video stok tetap terlihat di bawahnya */
+      const [src, cover] = kind.slice(4).split('|');
+      const clip = createRef<Video>();
+      node.add(<Video ref={clip} src={src} size={size} play />);
+      node.add(<Rect size={size} fill={DEEP_RED} opacity={Number(cover ?? 0.68)} />);
+      spawn(clip().scale(1.07, 9, linear));
+    } else if (kind.startsWith('video:')) {
       const [src, dim] = kind.slice(6).split('|');
       const clip = createRef<Video>();
       node.add(<Video ref={clip} src={src} size={size} play />);

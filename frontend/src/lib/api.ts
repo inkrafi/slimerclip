@@ -217,7 +217,7 @@ export const getTopicIdeas = (query: string, useNiche: boolean) =>
 export const getRecommendedIdeas = (refresh = false) =>
   request<{ ideas: TopicIdea[]; generated_at: number; niche: string[] }>(`/longform/ideas/recommended${refresh ? '?refresh=1' : ''}`)
 
-export const listTopicProjects = () => request<{ projects: TopicProjectSummary[]; brand: LongformBrand; voices?: LongformData['voices']; default_voice?: string }>('/longform/topics')
+export const listTopicProjects = () => request<{ projects: TopicProjectSummary[]; brand: LongformBrand; voices?: LongformData['voices']; default_voice?: string; default_short_voice?: string }>('/longform/topics')
 
 /** Contoh satu suara sebagai data URI; disimpan server per suara */
 export const getVoicePreview = (voice: string) =>

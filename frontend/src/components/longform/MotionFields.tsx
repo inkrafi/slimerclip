@@ -15,7 +15,6 @@ const FULL_TEMPLATES: { id: LongformMotionTemplate; label: string }[] = [
   { id: 'share', label: 'Cincin persen' },
   { id: 'verdict', label: 'Pertanyaan dan stempel' },
   { id: 'picture', label: 'Ilustrasi' },
-  { id: 'choice', label: 'Pilihan' },
 ]
 const PICTURES = [
   { id: 'phone', label: 'Ponsel' }, { id: 'tire', label: 'Ban kempes' }, { id: 'bowl', label: 'Mangkuk makan' }, { id: 'wallet', label: 'Dompet' }, { id: 'laptop', label: 'Laptop' },
@@ -59,16 +58,23 @@ function NumberField({ label, value, disabled, onChange }: { label: string; valu
 const lines = (value: string) => value.split('\n')
 
 /** Pilihan animasi satu adegan. Isinya harus sesuai narasi, karena tampil di video apa adanya. */
-export default function MotionFields({ motion, disabled, full, onChange }: {
-  motion: LongformMotion | null | undefined; disabled: boolean; full?: boolean; onChange: (motion: LongformMotion | null) => void
+export default function MotionFields({ motion, disabled, full, only, onChange }: {
+  motion: LongformMotion | null | undefined; disabled: boolean; full?: boolean
+  /** Batasi pilihan animasi, tanpa pilihan "Tanpa animasi" */
+  only?: LongformMotionTemplate[]
+  onChange: (motion: LongformMotion | null) => void
 }) {
+  const choices = only ? [...TEMPLATES, ...FULL_TEMPLATES].filter(item => only.includes(item.id as LongformMotionTemplate))
+    : full ? [...TEMPLATES, ...FULL_TEMPLATES] : TEMPLATES
   const template = motion?.template ?? ''
+  // Bentuk "Pilihan" sudah tidak ditawarkan; adegan lama yang memakainya tetap terbaca
+  if (template === 'choice' && !choices.some(item => item.id === 'choice')) choices.push({ id: 'choice', label: 'Pilihan (lama)' })
   return (
     <div className="mt-3 border-t border-rule pt-3">
       <label className="block text-xs text-ink-muted">
-        {full ? 'Animasi adegan' : 'Animasi di atas video'}
+        {full || only ? 'Jenis animasi' : 'Animasi di atas video'}
         <select value={template} disabled={disabled} onChange={e => onChange(e.target.value ? EMPTY[e.target.value as LongformMotionTemplate] : null)} className={`mt-1 ${inputClass}`}>
-          {(full ? [...TEMPLATES, ...FULL_TEMPLATES] : TEMPLATES).map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+          {choices.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
         </select>
       </label>
       {motion && <p className="mt-1 text-xs text-ink-faint">Isi sesuai narasi. Animasi yang belum lengkap tidak dipakai saat disimpan.</p>}

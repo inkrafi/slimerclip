@@ -4,15 +4,22 @@ import { useState } from 'react'
 import { Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { searchStock } from '@/lib/api'
-import type { CinematicScene, EditRecipe, SceneLook } from '@/lib/types'
+import MotionFields from '@/components/longform/MotionFields'
+import type { CinematicScene, EditRecipe, LongformMotion, LongformMotionTemplate, SceneLook, SceneSfx, SceneTransition } from '@/lib/types'
 
 const LOOKS: { id: SceneLook; label: string }[] = [
-  { id: 'landscape', label: '16:9' },
-  { id: 'square', label: 'Square 1:1' },
-  { id: 'portrait', label: 'Portrait 3:4' },
-  { id: 'card', label: 'Kartu bingkai putih' },
   { id: 'broll', label: 'B-roll' },
+  { id: 'zoom', label: 'Zoom ke pembicara' },
+  { id: 'motion', label: 'Animasi' },
 ]
+const TRANSITIONS: { id: SceneTransition; label: string }[] = [
+  { id: '', label: 'Tanpa' }, { id: 'glitch', label: 'Glitch' }, { id: 'flash', label: 'Flash' },
+]
+const SOUNDS: { id: SceneSfx; label: string }[] = [
+  { id: '', label: 'Tanpa' }, { id: 'glitch', label: 'Glitch' }, { id: 'whoosh', label: 'Woosh' }, { id: 'flash', label: 'Flash kamera' },
+]
+const MOTION_OPTIONS: LongformMotionTemplate[] = ['number', 'ledger', 'compare', 'flow', 'verdict']
+const FIRST_MOTION: LongformMotion = { template: 'number', label: '', value: 0, prefix: '', suffix: '', note: '', tone: 'plain' }
 
 const fieldClass = 'field h-10 bg-transparent text-sm text-ink placeholder:text-ink-faint outline-none'
 const DEFAULT_LENGTH = 3
@@ -23,7 +30,7 @@ interface Props {
   onChange: (scenes: CinematicScene[]) => void
 }
 
-/** Daftar adegan: bagian klip yang berganti bentuk, kartu, atau B-roll. Di luar adegan klip memakai bingkai utamanya. */
+/** Daftar adegan: B-roll, zoom, atau animasi, masing-masing dengan transisi dan efek suara. Di luar adegan klip memakai bingkai utamanya. */
 export default function ScenesEditor({ edit, playhead, onChange }: Props) {
   const scenes = edit.cinematic.scenes
   const [searching, setSearching] = useState<number | null>(null)
@@ -44,7 +51,7 @@ export default function ScenesEditor({ edit, playhead, onChange }: Props) {
       toast.error('Bagian ini sudah terisi. Geser pemutar ke bagian yang masih kosong.')
       return
     }
-    const added: CinematicScene = { start, end: start + DEFAULT_LENGTH, look: 'landscape', background: 'blur' }
+    const added: CinematicScene = { start, end: start + DEFAULT_LENGTH, look: 'zoom', transition: '', sfx: '' }
     onChange([...scenes, added].sort((a, b) => a.start - b.start))
   }
 
@@ -78,7 +85,7 @@ export default function ScenesEditor({ edit, playhead, onChange }: Props) {
         <p className="font-semibold text-ink">Adegan ({scenes.length})</p>
         <button type="button" onClick={add} className="btn btn-sm btn-quiet"><Plus className="size-3.5" aria-hidden /> Tambah di posisi pemutar</button>
       </div>
-      {!scenes.length && <p className="text-ink-muted">Belum ada adegan. Klip memakai bingkai utamanya dari awal sampai akhir.</p>}
+      {!scenes.length && <p className="text-ink-muted">Belum ada adegan. Klip menampilkan pembicara dari awal sampai akhir.</p>}
       <ul className="space-y-3">
         {scenes.map((scene, index) => (
           <li key={`${scene.start}-${index}`} className="rounded-md border border-rule p-3">
@@ -94,26 +101,40 @@ export default function ScenesEditor({ edit, playhead, onChange }: Props) {
               <label className="block min-w-36 flex-1">
                 <span className="text-xs text-ink-muted">Bentuk</span>
                 <span className="field mt-1 h-10">
-                  <select value={scene.look} onChange={e => patch(index, { look: e.target.value as SceneLook })} className="w-full bg-transparent text-sm text-ink outline-none">
+                  <select value={scene.look} onChange={e => {
+                    const look = e.target.value as SceneLook
+                    patch(index, look === 'motion' && !scene.motion ? { look, motion: FIRST_MOTION } : { look })
+                  }} className="w-full bg-transparent text-sm text-ink outline-none">
                     {LOOKS.map(look => <option key={look.id} value={look.id}>{look.label}</option>)}
                   </select>
                 </span>
               </label>
-              {(scene.look === 'portrait' || scene.look === 'square' || scene.look === 'landscape') && (
-                <label className="block w-24">
-                  <span className="text-xs text-ink-muted">Latar</span>
-                  <span className="field mt-1 h-10">
-                    <select value={scene.background} onChange={e => patch(index, { background: e.target.value as CinematicScene['background'] })} className="w-full bg-transparent text-sm text-ink outline-none">
-                      <option value="blur">Blur</option>
-                      <option value="black">Hitam</option>
-                    </select>
-                  </span>
-                </label>
-              )}
+              <label className="block min-w-28 flex-1">
+                <span className="text-xs text-ink-muted">Transisi</span>
+                <span className="field mt-1 h-10">
+                  <select value={scene.transition ?? ''} onChange={e => patch(index, { transition: e.target.value as SceneTransition })} className="w-full bg-transparent text-sm text-ink outline-none">
+                    {TRANSITIONS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                  </select>
+                </span>
+              </label>
+              <label className="block min-w-28 flex-1">
+                <span className="text-xs text-ink-muted">Efek suara</span>
+                <span className="field mt-1 h-10">
+                  <select value={scene.sfx ?? ''} onChange={e => patch(index, { sfx: e.target.value as SceneSfx })} className="w-full bg-transparent text-sm text-ink outline-none">
+                    {SOUNDS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                  </select>
+                </span>
+              </label>
               <button type="button" aria-label={`Hapus adegan pada detik ${relative(scene.start).toFixed(1)}`} onClick={() => onChange(scenes.filter((_, i) => i !== index))} className="icon-btn tap">
                 <Trash2 className="size-4" aria-hidden />
               </button>
             </div>
+            {scene.look === 'motion' && scene.motion && (
+              <MotionFields motion={scene.motion} disabled={false} only={MOTION_OPTIONS} onChange={motion => patch(index, { motion: motion ?? FIRST_MOTION })} />
+            )}
+            {scene.look === 'broll' && scene.file && !scene.visual && (
+              <p className="mt-3 text-xs text-ink-muted">Dari pustaka: {scene.file}</p>
+            )}
             {scene.look === 'broll' && (
               <div className="mt-3 flex flex-wrap items-end gap-3">
                 {scene.visual?.thumb && (

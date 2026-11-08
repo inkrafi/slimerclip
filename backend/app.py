@@ -1590,8 +1590,12 @@ def editor_cinematic_beats(video_id):
     segments = [{"words": [w for w in seg.get("words") or [] if w["start"] >= start - 0.05 and w["end"] <= end + 0.05]}
                 for seg in stored["segments"]]
     beats = cinematic.plan_beats(segments)
-    picks = cinematic_scenes.pick_broll(beats, max(0.0, end - start))
-    scenes = cinematic_scenes.attach_stock(cinematic_scenes.plan(beats, start, end, picks))
+    # Pustaka potongan sendiri lebih dulu; kalau kosong atau tidak ada yang cocok, baru video stok
+    transcript = " ".join(w["word"].strip() for seg in segments for w in seg["words"])
+    library = cinematic_scenes.pick_library(beats, max(0.0, end - start), None, transcript)
+    picks = cinematic_scenes.pick_broll(beats, max(0.0, end - start), None, transcript)
+    motions = cinematic_scenes.pick_motion(beats, max(0.0, end - start), None, transcript)
+    scenes = cinematic_scenes.attach_stock(cinematic_scenes.plan(beats, start, end, picks, library, motions))
     return jsonify({"beats": beats, "scenes": cinematic_scenes.sanitize(scenes)})
 
 
@@ -2402,7 +2406,8 @@ def _longform_url(base: str, user: User, video_id: str, filename: str, path: str
 
 def _voice_options() -> list:
     eleven = [{"id": k, "name": f"ElevenLabs {v}", "label": "natural"} for k, v in elevenlabs_tts.VOICES.items()] if elevenlabs_tts.available() else []
-    return eleven + [{"id": k, "name": k, "label": v} for k, v in longform.VOICES.items()]
+    custom = [{"id": k, "name": v, "label": "suara sendiri"} for k, v in longform.CUSTOM_VOICES.items()]
+    return eleven + custom + [{"id": k, "name": k, "label": v} for k, v in longform.VOICES.items()]
 
 
 def _longform_payload(user: User, video_id: str, folder: str, project: dict | None) -> dict:
@@ -2530,7 +2535,7 @@ def longform_script(video_id):
 
 
 def _short_seconds(value) -> int:
-    return value if value in klik_render.SECONDS_CHOICES else 30
+    return klik_render.MAX_SECONDS   # video pendek selalu 45-60 detik
 
 
 def _replace_script(folder: str, project: dict, old: dict | None) -> dict:
@@ -2592,7 +2597,10 @@ def longform_tts(video_id, scene_id):
     text = scene["text"]
     filename = f"{scene_id}.tts.{uuid.uuid4().hex[:6]}.wav"
     try:
-        duration = longform.synthesize(text, voice, os.path.join(folder, filename), None)
+        if klik_render.is_short(project):
+            duration = longform.synthesize_short(text, voice, os.path.join(folder, filename))
+        else:
+            duration = longform.synthesize(text, voice, os.path.join(folder, filename), None)
     except elevenlabs_tts.VoiceError as e:
         raise ApiError(422, str(e), "tts_failed")
     except Exception as e:
@@ -2715,7 +2723,7 @@ def _fill_visuals(project: dict) -> int:
 
 
 # Suara channel: rekaman sendiri tetap bisa menggantikannya per adegan
-CHANNEL_VOICE = {"voice": "Puck", "style": "Ngobrol santai ke teman sendiri pakai bahasa Jakarta gue-lu, hangat dan agak nyeletuk, "
+CHANNEL_VOICE = {"voice": longform.DEFAULT_VOICE, "style": "Ngobrol santai ke teman sendiri pakai bahasa Jakarta gue-lu, hangat dan agak nyeletuk, "
                                            "seperti kreator YouTube yang lagi cerita. Tempo cepat tapi tidak terburu-buru, intonasi naik "
                                            "turun, jeda singkat untuk efek, tidak seperti penyiar berita atau robot."}
 CHANNEL_THUMB = {"accent": "hijau", "style": "tajuk"}
@@ -2723,7 +2731,7 @@ VOICE_FAILURE_LIMIT = 2     # gagal berturut-turut sebanyak ini berarti layanann
 
 
 def _channel_voice(chosen=None) -> dict:
-    """Suara pilihan, atau Gemini Puck sebagai suara channel. Satu proyek memakai satu suara, jadi tidak beralih otomatis saat gagal."""
+    """Suara pilihan, atau suara Rafi sebagai suara channel. Satu proyek memakai satu suara, jadi tidak beralih otomatis saat gagal."""
     if any(v["id"] == chosen for v in _voice_options()):
         return {**CHANNEL_VOICE, "voice": chosen}
     return CHANNEL_VOICE
@@ -2766,9 +2774,11 @@ _prepare_state: dict = {}
 TTS_TIMEOUT = 120   # satu panggilan suara yang macet tidak boleh menahan seluruh proses Generate
 
 
-def _synthesize_with_timeout(text: str, voice: dict, path: str) -> float:
+def _synthesize_with_timeout(text: str, voice: dict, path: str, short: bool = False) -> float:
     pool = ThreadPoolExecutor(max_workers=1)
     try:
+        if short:
+            return pool.submit(longform.synthesize_short, text, voice, path).result(timeout=TTS_TIMEOUT)
         return pool.submit(longform.synthesize, text, voice, path, None).result(timeout=TTS_TIMEOUT)
     except FutureTimeout:
         raise TimeoutError(f"Suara tidak selesai dalam {TTS_TIMEOUT} detik")
@@ -2778,10 +2788,11 @@ def _synthesize_with_timeout(text: str, voice: dict, path: str) -> float:
 
 def _prepare_scene_voice(folder: str, scene_id: str, voice: dict):
     with longform.edit_lock:
-        scene = _scene(_longform_project(folder), scene_id)
+        project = _longform_project(folder)
+        scene = _scene(project, scene_id)
     text = scene["text"]
     filename = f"{scene_id}.tts.{uuid.uuid4().hex[:6]}.wav"
-    duration = _synthesize_with_timeout(text, voice, os.path.join(folder, filename))
+    duration = _synthesize_with_timeout(text, voice, os.path.join(folder, filename), klik_render.is_short(project))
     with longform.edit_lock:
         project = _longform_project(folder)
         scene = _scene(project, scene_id)
@@ -3144,7 +3155,8 @@ def longform_topics():
                           "rendered_at": output.get("rendered_at"), "duration": output.get("duration"),
                           "format": project.get("format") or "long"})
     items.sort(key=lambda x: x["created_at"], reverse=True)
-    return jsonify({"projects": items, "brand": _load_brand(user), "voices": _voice_options(), "default_voice": _channel_voice()["voice"]})
+    return jsonify({"projects": items, "brand": _load_brand(user), "voices": _voice_options(), "default_voice": _channel_voice()["voice"],
+                    "default_short_voice": longform.SHORT_VOICE})
 
 
 @app.route("/longform/brand", methods=["PUT"])
@@ -3177,13 +3189,15 @@ def longform_topic_create():
             sources = topics.sanitize_sources(topics.search_news(title, topics.MAX_SOURCES))
         except requests.RequestException as e:
             raise _feed_error(e)
-        if not sources:
+        if not sources and video_format != klik_render.SHORT:
             raise ApiError(422, "Belum ada berita 7 hari terakhir tentang topik ini. Coba kata kunci lain.", "no_sources")
+        # Video pendek tetap bisa dibuat tanpa berita: naskahnya memakai pengetahuan umum yang mapan
     project = _topic_script(user, title, longform._clean(data.get("angle"), 400), sources, minutes,
                             _channel_from_request(user, data), seconds, video_format)
     key = topics.new_topic_id()
     folder = _topic_folder(_owner_root(CLIPS_ROOT, user), key)
-    project["voice"] = _channel_voice(data.get("voice")) if video_format else longform.sanitize_voice(None)
+    chosen = data.get("voice") or (longform.SHORT_VOICE if video_format == klik_render.SHORT else None)
+    project["voice"] = _channel_voice(chosen) if video_format else longform.sanitize_voice(None)
     longform.save_project(folder, project)
     if data.get("auto") is True:
         _start_prepare(user, key, folder)

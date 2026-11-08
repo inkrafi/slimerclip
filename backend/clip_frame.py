@@ -1,18 +1,18 @@
 """
-Bingkai video di dalam output 9:16: penuh (mengikuti pembicara), 3:4, square 1:1, atau landscape 16:9.
+Bingkai video di dalam output 9:16: penuh (mengikuti pembicara), 3:4, square 1:1, 4:3, atau landscape 16:9.
 Selain penuh, video diletakkan di tengah dengan latar hitam atau blur dari video yang sama.
 """
 import re
 
 # Lebar dibagi tinggi
-RATIOS = {"portrait": 3 / 4, "square": 1.0, "landscape": 16 / 9}
+RATIOS = {"portrait": 3 / 4, "square": 1.0, "classic": 4 / 3, "landscape": 16 / 9}
 BACKGROUNDS = ("black", "blur")
 DEFAULT = {"ratio": "full", "background": "blur"}
 BLUR_SCALE = 4   # latar diperkecil dulu supaya blur kuat tetap cepat
 FPS = 30         # sama dengan zoom Cinematic, supaya gerak video di tengah tidak tersendat
 
-# Posisi teks Cinematic (satuan 1080×1920): landscape di bawah video, lainnya di bagian bawah video
-TEXT_Y = {"portrait": 1280, "square": 1240, "landscape": 1420}
+# Posisi teks Cinematic (satuan 1080×1920): di bagian bawah video, seperti video referensi
+TEXT_Y = {"portrait": 1280, "square": 1240, "classic": 1180, "landscape": 1130}
 
 
 def sanitize(raw) -> dict:

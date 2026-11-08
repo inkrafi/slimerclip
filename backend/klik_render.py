@@ -18,7 +18,8 @@ import motion_scenes
 SHORT = "short"
 LONG = "long"
 MAX_SECONDS = 60
-SECONDS_CHOICES = (30, 45, 60)
+MIN_SECONDS = 45
+SECONDS_CHOICES = (60,)
 WORDS_PER_SECOND = 2.2      # tempo bicara santai, terukur ±2,4 kata per detik pada contoh channel
 SIZES = {SHORT: (1080, 1920), LONG: (1920, 1080)}
 FPS = 30
@@ -40,6 +41,9 @@ def is_short(project: dict | None) -> bool:
     return bool(project) and project.get("format") == SHORT
 
 
+RED_OVER_VIDEO = 0.68   # latar merah di atas video stok: videonya masih terlihat
+
+
 def target_words(seconds: int) -> int:
     return int(seconds * WORDS_PER_SECOND)
 
@@ -58,12 +62,15 @@ def plan_scene(scene: dict, index: int, last: bool, has_video: bool, fmt: str = 
     motion = scene.get("motion") or {}
     template = motion.get("template")
     flip = "paper" if index % 2 else "grid"
-    if last and scene["text"].rstrip().endswith("?") and template != "choice":
+    if template == "choice":
+        template = None   # bentuk "pilihan" sudah tidak dipakai; adegan lama tampil sebagai adegan biasa
+    if last and scene["text"].rstrip().endswith("?"):
         return {"template": "question", "backdrop": "green"}
     if not template:
         return {"template": "plain", "backdrop": "video"} if has_video else {"template": "statement", "backdrop": flip}
     if template == "number":
-        backdrop = "red" if motion.get("tone") == "bad" else "grid"
+        bad = motion.get("tone") == "bad"
+        backdrop = ("redvideo" if has_video and fmt == SHORT else "red") if bad else "grid"
     elif template == "ledger":
         backdrop = "video" if has_video and fmt == SHORT else "paper"
     elif template in ("share", "verdict"):
@@ -121,8 +128,6 @@ def timeline(project: dict, folder: str) -> tuple[list, list, list, float]:
         motion = planned.get("motion") or {}
         if planned["template"] == "ledger":
             item["cues"] = label_cues([r["label"] for r in motion.get("rows", [])], timed, clock, clock + seconds)
-        elif planned["template"] == "choice":
-            item["cues"] = label_cues(["pilih"], timed, clock + seconds * 0.4, clock + seconds)
         elif planned["template"] == "verdict":
             item["cues"] = label_cues(str(motion.get("answer", "")).split()[:1], timed, clock, clock + seconds)
         scenes.append(item)
@@ -145,7 +150,7 @@ def prepare_stock(narration: list, scenes: list, asset_dir: str, prefix: str, si
     """Video stok dipotong sesuai rasio dan ditaruh di folder publik Revideo. Yang gagal diganti latar polos."""
     width, height = size
     for source, scene in zip(narration, scenes):
-        if scene["backdrop"] != "video":
+        if scene["backdrop"] not in ("video", "redvideo"):
             continue
         name = f"{scene['id']}.mp4"
         try:
@@ -155,10 +160,13 @@ def prepare_stock(narration: list, scenes: list, asset_dir: str, prefix: str, si
                      "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,format=yuv420p",
                      "-c:v", "libx264", "-crf", "22", "-preset", "veryfast", "-g", "15", "-bf", "0",
                      os.path.join(asset_dir, name)], "Video stok gagal diproses")
-            scene["backdrop"] = f"video:/klik/auto/{prefix}/{name}|{0.62 if scene['template'] in ('kinetic', 'choice') else 0.38}"
+            if scene["backdrop"] == "redvideo":
+                scene["backdrop"] = f"red:/klik/auto/{prefix}/{name}|{RED_OVER_VIDEO}"
+            else:
+                scene["backdrop"] = f"video:/klik/auto/{prefix}/{name}|{0.62 if scene['template'] == 'kinetic' else 0.38}"
         except Exception as e:
             print(f"[Klik] Video stok adegan {scene['id']} dilewati: {e}")
-            scene["backdrop"] = "grid"
+            scene["backdrop"] = "red" if scene["backdrop"] == "redvideo" else "grid"
             if scene["template"] == "plain":
                 scene["template"] = "statement"
 

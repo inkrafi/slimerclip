@@ -555,7 +555,7 @@ export interface EditRecipe {
 
 /** Bingkai di dalam output 9:16 (backend/clip_frame.py): full 9:16, portrait 3:4, square 1:1, landscape 16:9 */
 export interface ClipFrame {
-  ratio: 'full' | 'portrait' | 'square' | 'landscape'
+  ratio: 'full' | 'portrait' | 'square' | 'classic' | 'landscape'
   /** Latar di luar video saat tidak penuh */
   background: 'black' | 'blur'
 }
@@ -567,6 +567,13 @@ export interface CinematicBeat {
   lead: string
   main: string
   kind: 'phrase' | 'number'
+  /** Teks kecil sesudah teks utama */
+  tail?: string
+  /** Detik tiap kata diucapkan, supaya teks muncul kata per kata */
+  times?: { lead?: number[]; main?: number[]; tail?: number[] }
+  /** Detik teks utama dan penutup diucapkan */
+  main_at?: number
+  tail_at?: number
 }
 
 /** Preset Cinematic (backend/cinematic.py). Saat aktif, teks kata kunci menggantikan caption per kata. */
@@ -574,26 +581,29 @@ export interface CinematicSettings {
   enabled: boolean
   /** Kekuatan warna 0–100 */
   grade: number
-  zoom: boolean
+  /** Warna teks highlight, #RRGGBB */
+  highlight: string
   name: string
   role: string
   beats: CinematicBeat[]
   scenes: CinematicScene[]
-  /** Transisi glitch di tiap pergantian adegan */
-  glitch: boolean
-  /** Efek suara whoosh di tiap pergantian adegan */
-  sfx: boolean
 }
 
-export type SceneLook = 'portrait' | 'square' | 'landscape' | 'card' | 'broll'
+export type SceneLook = 'broll' | 'zoom' | 'motion'
+export type SceneTransition = '' | 'glitch' | 'flash'
+export type SceneSfx = '' | 'glitch' | 'whoosh' | 'flash'
 
-/** Bagian klip yang berganti bentuk (backend/cinematic_scenes.py). Waktu dalam detik video sumber. */
+/** Bagian klip dengan B-roll, zoom, atau animasi (backend/cinematic_scenes.py). Waktu dalam detik video sumber. */
 export interface CinematicScene {
   start: number
   end: number
   look: SceneLook
-  background: 'black' | 'blur'
+  transition: SceneTransition
+  sfx: SceneSfx
+  /** Khusus animasi */
+  motion?: LongformMotion
   /** Khusus B-roll */
+  file?: string
   query?: string
   visual?: { provider: string; id: number | string; link: string; thumb?: string; page?: string; credit?: string; credit_url?: string; duration?: number }
 }

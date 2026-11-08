@@ -547,7 +547,7 @@ def test_longform_flow(env, monkeypatch):
     c, h = env["client"], token("admin@example.com")
     assert c.post("/analyze", headers=h, json={"youtube_url": URL}).status_code == 200
     info = c.get(f"/videos/{VIDEO_ID}/longform", headers=h).json
-    assert info["project"] is None and sum(not v["name"].startswith("ElevenLabs") for v in info["voices"]) == 30
+    assert info["project"] is None and sum(not v["name"].startswith("ElevenLabs") for v in info["voices"]) == 31
     # Khusus admin: pengguna biasa ditolak walau videonya ada di pustakanya
     user = token("lf@example.com")
     assert c.post("/analyze", headers=user, json={"youtube_url": URL}).status_code == 200

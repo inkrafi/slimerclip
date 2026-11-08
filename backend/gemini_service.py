@@ -30,7 +30,9 @@ def _get_client(api_key: str | None = None) -> genai.Client:
     """
     global _client
     if api_key:
-        return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS))
+        # Tanpa percobaan ulang tersembunyi, supaya batas kuota langsung terlihat dan pemanggil bisa beralih key
+        return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS,
+                                                                            retry_options=types.HttpRetryOptions(attempts=1)))
     if _client is None:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:

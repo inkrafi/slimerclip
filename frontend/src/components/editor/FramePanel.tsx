@@ -6,6 +6,7 @@ const RATIOS: { id: ClipFrame['ratio']; label: string; hint: string; box: string
   { id: 'full', label: 'Penuh', hint: '9:16', box: 'inset-0' },
   { id: 'portrait', label: 'Portrait', hint: '3:4', box: 'inset-x-0 top-[12.5%] bottom-[12.5%]' },
   { id: 'square', label: 'Square', hint: '1:1', box: 'inset-x-0 top-[21.9%] bottom-[21.9%]' },
+  { id: 'classic', label: 'Klasik', hint: '4:3', box: 'inset-x-0 top-[28.9%] bottom-[28.9%]' },
   { id: 'landscape', label: 'Landscape', hint: '16:9', box: 'inset-x-0 top-[34.2%] bottom-[34.2%]' },
 ]
 

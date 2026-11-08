@@ -557,6 +557,8 @@ export default function ClipEditor({ videoId, clipKey }: Props) {
                 ...edit,
                 cinematic: { ...edit.cinematic, ...patch },
                 hook: turnHookOff ? { ...edit.hook, enabled: false } : edit.hook,
+                // Gaya Cinematic memakai bingkai 16:9 berlatar hitam, kecuali bingkainya sudah kamu pilih
+                frame: patch.enabled && edit.frame.ratio === 'full' ? { ratio: 'landscape', background: 'black' } : edit.frame,
               })} />
           </Section>
 

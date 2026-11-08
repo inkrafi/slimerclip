@@ -14,21 +14,21 @@ import { formatSpan } from '@/lib/clip-meta'
 import type { LongformData, TopicFit, TopicIdea, TopicProjectSummary, VideoFormat } from '@/lib/types'
 
 const DURATIONS = [5, 8, 12]
-const SHORT_SECONDS = [30, 45, 60]
 const projectHref = (id: string) => `/proyek-video/${id}`
 const VOICE_KEY = 'klik-voice'
+const SHORT_VOICE_KEY = 'klik-voice-short'
 
-function rememberedVoice(): string {
+function rememberedVoice(key = VOICE_KEY): string {
   try {
-    return localStorage.getItem(VOICE_KEY) ?? ''
+    return localStorage.getItem(key) ?? ''
   } catch {
     return ''
   }
 }
 
-function rememberVoice(voice: string) {
+function rememberVoice(voice: string, key = VOICE_KEY) {
   try {
-    localStorage.setItem(VOICE_KEY, voice)
+    localStorage.setItem(key, voice)
   } catch {
     // Pilihan suara hanya tidak diingat di kunjungan berikutnya
   }
@@ -143,7 +143,6 @@ function Hub() {
   const [results, setResults] = useState<TopicIdea[] | null>(null)
   const [searching, setSearching] = useState(!!initialQuery)
   const [minutes, setMinutes] = useState(8)
-  const [seconds, setSeconds] = useState(30)
   const [creating, setCreating] = useState<string | null>(null)
   const [ownTitle, setOwnTitle] = useState('')
   const [ownAngle, setOwnAngle] = useState('')
@@ -151,7 +150,15 @@ function Hub() {
   // Nama channel untuk sapaan pembuka & penutup naskah (tersimpan di server sebagai brand)
   const [channel, setChannel] = useState<string | null>(null)
   const [voices, setVoices] = useState<LongformData['voices']>([])
-  const [voice, setVoice] = useState('')
+  const [longVoice, setLongVoice] = useState('')
+  // Video pendek punya suara sendiri (bawaan Puck), terpisah dari video panjang
+  const [shortVoice, setShortVoice] = useState('')
+  const voice = isShort ? shortVoice : longVoice
+  const pickVoice = (next: string) => {
+    if (isShort) setShortVoice(next)
+    else setLongVoice(next)
+    rememberVoice(next, isShort ? SHORT_VOICE_KEY : VOICE_KEY)
+  }
 
   const loadProjects = useCallback(() => {
     listTopicProjects().then(res => {
@@ -160,7 +167,9 @@ function Hub() {
       const options = res.voices ?? []
       setVoices(options)
       const saved = rememberedVoice()
-      setVoice(prev => prev || (options.some(v => v.id === saved) ? saved : res.default_voice ?? ''))
+      setLongVoice(prev => prev || (options.some(v => v.id === saved) ? saved : res.default_voice ?? ''))
+      const savedShort = rememberedVoice(SHORT_VOICE_KEY)
+      setShortVoice(prev => prev || (options.some(v => v.id === savedShort) ? savedShort : res.default_short_voice ?? res.default_voice ?? ''))
     }).catch(() => setProjects([]))
   }, [])
   useEffect(loadProjects, [loadProjects])
@@ -208,7 +217,7 @@ function Hub() {
   const create = async (key: string, title: string, angle: string, sources: TopicIdea['sources']) => {
     setCreating(key)
     try {
-      const res = await createTopicProject({ title, angle, sources, minutes, channel: channel ?? '', format, auto: true, voice, ...(isShort ? { seconds } : {}) })
+      const res = await createTopicProject({ title, angle, sources, minutes, channel: channel ?? '', format, auto: true, voice, ...(isShort ? { seconds: 60 } : {}) })
       toast.success('Naskah siap. Suara, visual, dan thumbnail sedang dibuat.')
       router.push(projectHref(res.id))
     } catch (e) {
@@ -280,19 +289,18 @@ function Hub() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {isShort ? (
+                  <span className="inline-flex min-h-11 items-center rounded-md border border-rule px-3 text-sm text-ink-muted">Durasi 45-60 detik</span>
+                ) : (
                 <div role="radiogroup" aria-label="Durasi video" className="inline-flex rounded-md border border-rule p-0.5 text-sm">
-                  {isShort ? SHORT_SECONDS.map(s => (
-                    <button key={s} type="button" role="radio" aria-checked={seconds === s} onClick={() => setSeconds(s)}
-                      className={`min-h-11 rounded-[5px] px-3 ${seconds === s ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
-                      ±{s} dtk
-                    </button>
-                  )) : DURATIONS.map(m => (
+                  {DURATIONS.map(m => (
                     <button key={m} type="button" role="radio" aria-checked={minutes === m} onClick={() => setMinutes(m)}
                       className={`min-h-11 rounded-[5px] px-3 ${minutes === m ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}`}>
                       ±{m} mnt
                     </button>
                   ))}
                 </div>
+                )}
                 <button type="button" onClick={refresh} disabled={refreshing || !recommended || busy} className="btn btn-sm btn-quiet min-h-11"
                   title="Cari rekomendasi baru dari berita terkini">
                   <RefreshCw className={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} aria-hidden /> Ganti
@@ -358,7 +366,7 @@ function Hub() {
             <section className="rounded-lg border border-rule glass p-4">
               <h2 className="font-semibold text-ink">Pilih suara dulu</h2>
               <p className="mt-1 mb-3 text-sm text-ink-muted">Dengarkan contohnya, lalu Generate memakai suara ini.</p>
-              <VoicePicker voices={voices} value={voice} disabled={busy} onChange={next => { setVoice(next); rememberVoice(next) }} />
+              <VoicePicker voices={voices} value={voice} disabled={busy} onChange={pickVoice} />
             </section>
           )}
           <section className="rounded-lg border border-rule glass p-4">

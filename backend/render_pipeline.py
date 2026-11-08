@@ -405,10 +405,10 @@ class RenderPipeline:
         temp_output_path = os.path.join(output_dir, f"{base_name}.{'preview.' if preview else ''}rendering.mp4")
         temp_audio_path = os.path.join(output_dir, f"{base_name}.audio.wav")
         graph_path = os.path.join(output_dir, f"{base_name}.filter.txt")
+        motion_files = []
         words_path = os.path.join(output_dir, f"{base_name}.words.json")
         shade_path = os.path.join(output_dir, f"{base_name}.shade.png")
         hook_shade_path = os.path.join(output_dir, f"{base_name}.hookshade.png")
-        card_path = os.path.join(output_dir, f"{base_name}.card.png")
         layout_path = os.path.join(output_dir, f"{base_name}.layout.json")
         assets_dir = options.get('assets_dir') or ''
 
@@ -467,6 +467,7 @@ class RenderPipeline:
                 cinema_beats = cinematic.relative_beats(cinema.get('beats'), start_sec, duration)
                 if not cinema_beats:    # klip dirender tanpa membuka panelnya: pilih teks otomatis
                     cinema_beats = cinematic.plan_beats(transcribed, options.get('api_key'))
+            scene_plan = cinematic_scenes.relative(cinema.get('scenes'), start_sec, duration) if cinema.get('enabled') else []
 
             graph, label = layout_graph, "vlayout"
             # Bingkai 3:4, square, 16:9: menggantikan tata letak penuh. Zoom hanya mengenai video di tengah, bukan latarnya.
@@ -474,8 +475,7 @@ class RenderPipeline:
             framed = clip_frame.is_framed(frame)
             if framed:
                 fg_w, fg_h = clip_frame.foreground_size(frame, target_w)
-                fg_zoom = (cinematic.zoom_filter(cinema_beats, duration, fg_w, fg_h)
-                           if cinema.get('enabled') and cinema.get('zoom') else None)
+                fg_zoom = cinematic.zoom_filter(scene_plan, duration, fg_w, fg_h)
                 src_w, src_h = _probe(video_path)
                 graph = clip_frame.build_graph(frame, layout_graph, src_w, src_h, target_w, target_h, fg_zoom)
             if not preview and (edit.get('enhance') or {}).get('video'):
@@ -490,31 +490,38 @@ class RenderPipeline:
                     graph += f";[{label}]unsharp=5:5:0.6:5:5:0[vsharp]"
                     label = "vsharp"
 
-            cinema_scenes = []
+            cinema_scenes, broll_paths, motion_paths = [], {}, {}
             if cinema.get('enabled'):
-                zoom = cinematic.zoom_filter(cinema_beats, duration, target_w, target_h) if cinema.get('zoom') and not framed else None
+                zoom = cinematic.zoom_filter(scene_plan, duration, target_w, target_h) if not framed else None
                 if zoom:
                     graph += f";[{label}]{zoom}[vzoom]"
                     label = "vzoom"
                 # Adegan: B-roll yang gagal diunduh dilewati, klip tetap selesai
-                wanted = cinematic_scenes.relative(cinema.get('scenes'), start_sec, duration)
-                if wanted:
+                if scene_plan:
                     if callback: callback({'status': 'rendering', 'progress': 55})
-                    cinema_scenes, broll_paths = cinematic_scenes.download_broll(wanted)
+                    cinema_scenes, broll_paths = cinematic_scenes.download_broll(scene_plan)
+                    motion_paths = cinematic_scenes.render_motions(cinema_scenes, output_dir, cinema.get('highlight') or cinematic.DEFAULT['highlight'])
+                    motion_files.extend(motion_paths.values())
+                    # Animasi yang gagal dibuat dilewati, gambar kembali ke pembicara
+                    missing = [i for i, s in enumerate(cinema_scenes) if s['look'] == 'motion' and i not in motion_paths]
+                    if missing:
+                        keep = [i for i in range(len(cinema_scenes)) if i not in missing]
+                        cinema_scenes, broll_paths, motion_paths = ([cinema_scenes[i] for i in keep],
+                                                                    {keep.index(i): p for i, p in broll_paths.items()},
+                                                                    {keep.index(i): p for i, p in motion_paths.items()})
                 if cinema_scenes:
-                    if any(s['look'] == 'card' for s in cinema_scenes):
-                        cinematic_scenes.write_card_png(card_path, target_w, target_h)
-                    src_w, src_h = _probe(video_path)
                     layers, label, scene_inputs = cinematic_scenes.build_layers(
-                        cinema_scenes, broll_paths, label, layout_graph, src_w, src_h, target_w, target_h, duration,
-                        len(extra_inputs) + 1, card_path)
+                        cinema_scenes, broll_paths, motion_paths, label, target_w, target_h, len(extra_inputs) + 1, frame if framed else None)
                     extra_inputs.extend(scene_inputs)
                     graph += ";" + layers
-                    glitch = (cinematic_scenes.glitch_graph(label, "vglitch", cinematic_scenes.boundaries(cinema_scenes, duration),
-                                                            target_w, target_h) if cinema.get('glitch') else None)
+                    glitch = cinematic_scenes.glitch_graph(label, "vglitch", cinematic_scenes.transition_points(cinema_scenes, "glitch", duration), target_w, target_h)
                     if glitch:
                         graph += ";" + glitch
                         label = "vglitch"
+                    flash = cinematic_scenes.flash_filter(cinematic_scenes.transition_points(cinema_scenes, "flash", duration))
+                    if flash:
+                        graph += f";[{label}]{flash}[vflash]"
+                        label = "vflash"
                 grade = cinematic.grade_filter(cinema.get('grade', 0))
                 if grade:
                     graph += f";[{label}]{grade}[vgrade]"
@@ -588,7 +595,7 @@ class RenderPipeline:
                     extra_inputs.append(["-i", path])
                     sfx_inputs.append((len(extra_inputs), offset, item['volume']))
             # Efek suara transisi Cinematic: tidak disimpan di resep, jadi efek suara manual tetap terpisah
-            if cinema.get('enabled') and cinema.get('sfx'):
+            if cinema.get('enabled'):
                 for name, offset in cinematic_scenes.transition_sfx(cinema_scenes, duration):
                     path = self._asset_path(assets_dir, name)
                     if path:
@@ -626,7 +633,8 @@ class RenderPipeline:
             _remove_quietly(graph_path)
             _remove_quietly(shade_path)
             _remove_quietly(hook_shade_path)
-            _remove_quietly(card_path)
+            for path in motion_files:
+                _remove_quietly(path)
 
         if callback: callback({'status': 'done', 'progress': 100, 'output': final_output_path})
 

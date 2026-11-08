@@ -11,13 +11,13 @@ import {
 
 const LEAD = 0.18;
 
-interface Tone { ink: string; muted: string; accent: string; bad: string; card: string; edge: string; shadow: string }
-interface Box { wide: boolean; width: number; top: number; bottom: number }
+export interface Tone { ink: string; muted: string; accent: string; bad: string; card: string; edge: string; shadow: string }
+export interface Box { wide: boolean; width: number; top: number; bottom: number }
 type Motion = Record<string, any>;
 
-function toneFor(backdrop: Backdrop): Tone {
+export function toneFor(backdrop: Backdrop): Tone {
   if (backdrop === 'paper') return {ink: DARK_INK, muted: DARK_MUTED, accent: DEEP_GREEN, bad: DEEP_RED, card: PAPER_CARD, edge: PAPER_EDGE, shadow: '#00000000'};
-  if (backdrop === 'red') return {ink: INK, muted: INK, accent: INK, bad: INK, card: DARK_INK, edge: INK, shadow: '#00000000'};
+  if (backdrop === 'red' || backdrop.startsWith('red:')) return {ink: INK, muted: INK, accent: INK, bad: INK, card: DARK_INK, edge: INK, shadow: '#00000000'};
   if (backdrop === 'green') return {ink: DARK_INK, muted: DARK_INK, accent: DARK_INK, bad: DEEP_RED, card: DARK_INK, edge: DARK_INK, shadow: '#00000000'};
   return {ink: INK, muted: MUTED, accent: GREEN, bad: RED, card: PANEL, edge: EDGE, shadow: '#000000'};
 }
@@ -28,7 +28,7 @@ function amount(value: number, motion: Motion, digits = 0) {
   return `${motion.prefix ?? ''}${shown.toLocaleString('id-ID', {minimumFractionDigits: digits, maximumFractionDigits: digits})}${motion.suffix ?? ''}`;
 }
 
-function* kinetic(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
+export function* kinetic(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
   const words: string[] = motion.words;
   const refs = words.map(() => createRef<Txt>());
   const big = box.wide ? 118 : 128;
@@ -43,7 +43,7 @@ function* kinetic(group: Node, motion: Motion, tone: Tone, box: Box, seconds: nu
   yield* sequence(Math.max(0.28, (seconds * 0.7) / words.length), ...refs.map(ref => all(ref().opacity(1, 0.12), ref().scale(1, 0.3, easeOutBack))));
 }
 
-function* data(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
+export function* data(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
   const values: number[] = motion.values;
   const digits = values.some(v => !Number.isInteger(v)) ? 1 : 0;
   const number = createRef<Txt>();
@@ -68,7 +68,7 @@ function* data(group: Node, motion: Motion, tone: Tone, box: Box, seconds: numbe
   }));
 }
 
-function* compare(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
+export function* compare(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
   const sides = [motion.left, motion.right];
   const cards = sides.map(() => createRef<Node>());
   const size: [number, number] = box.wide ? [760, 560] : [860, 410];
@@ -85,7 +85,7 @@ function* compare(group: Node, motion: Motion, tone: Tone, box: Box, seconds: nu
   yield* sequence(Math.max(0.5, seconds * 0.4), ...cards.map((card, s) => card().position([place[s].x, place[s].y], 0.42, easeOutCubic)));
 }
 
-function* flow(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
+export function* flow(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
   const steps: {head: string; body: string}[] = motion.steps;
   const rows = steps.map(() => createRef<Node>());
   const wide = box.wide;
@@ -108,7 +108,7 @@ function* flow(group: Node, motion: Motion, tone: Tone, box: Box, seconds: numbe
 }
 
 /** Struk di 9:16, tabel bergaris di 16:9. Tiap baris muncul saat labelnya diucapkan, saldo ikut berkurang. */
-function* ledger(group: Node, motion: Motion, tone: Tone, box: Box, cues: number[]): ThreadGenerator {
+export function* ledger(group: Node, motion: Motion, tone: Tone, box: Box, cues: number[]): ThreadGenerator {
   const list: {label: string; value: number}[] = motion.rows;
   const refs = list.map(() => createRef<Node>());
   const remain = createRef<Txt>();
@@ -154,7 +154,7 @@ function* ledger(group: Node, motion: Motion, tone: Tone, box: Box, cues: number
   }
 }
 
-function* numberScene(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
+export function* numberScene(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
   const figure = createRef<Txt>();
   const value: number = motion.value;
   const digits = Number.isInteger(value) ? 0 : 1;
@@ -166,7 +166,7 @@ function* numberScene(group: Node, motion: Motion, tone: Tone, box: Box, seconds
   figure().text(amount(value, motion, digits));
 }
 
-function* share(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
+export function* share(group: Node, motion: Motion, tone: Tone, box: Box, seconds: number): ThreadGenerator {
   const sweep = createSignal(-90);
   const text = createRef<Txt>();
   const percent: number = motion.percent;
@@ -180,7 +180,7 @@ function* share(group: Node, motion: Motion, tone: Tone, box: Box, seconds: numb
   yield* all(sweep(-90 + 3.6 * percent, run, easeInOutCubic), tween(run, t => text().text(`${Math.round(percent * easeInOutCubic(t))}%`)));
 }
 
-function* verdict(group: Node, motion: Motion, tone: Tone, box: Box, cues: number[]): ThreadGenerator {
+export function* verdict(group: Node, motion: Motion, tone: Tone, box: Box, cues: number[]): ThreadGenerator {
   const stamp = createRef<Node>();
   group.add(<Txt text={motion.question} fontFamily={SANS} fontWeight={700} fontSize={box.wide ? 110 : 128} lineHeight="108%" fill={tone.ink} y={-70} width={box.width} textAlign="center" textWrap />);
   group.add(<Node ref={stamp} y={box.wide ? 210 : 280} rotation={-6} opacity={0} scale={1.6}>
@@ -286,7 +286,6 @@ export function* auto(view: View2D, job: Record<string, any>): ThreadGenerator {
   backs.mountCover();
   const channel = String(job.channel || '').toUpperCase();
   if (wide) statusBar(view, -480, 880, 'SUMBER DI DESKRIPSI', 26, channel);
-  else statusBar(view, -770, 470, 'SUMBER DI DESKRIPSI', 28, channel);
   if (job.words.length) captions(view, job.words, 500, 62, job.duration);
   spawn(stage().scale(wide ? 1.03 : 1.04, job.duration, linear));
 
