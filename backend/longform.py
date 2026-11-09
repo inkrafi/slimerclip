@@ -467,7 +467,8 @@ def synthesize(text: str, voice: dict, out_path: str, api_key: str | None) -> fl
     last = None
     for attempt in range(2):
         try:
-            result = _get_client(api_key).interactions.create(
+            client = _get_client(api_key)   # simpan referensinya: client sementara yang tidak dipegang ditutup sebelum request terkirim
+            result = client.interactions.create(
                 model=TTS_MODEL,
                 input=[{"type": "user_input", "content": [{
                     "type": "text", "text": text,

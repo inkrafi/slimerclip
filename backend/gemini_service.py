@@ -92,7 +92,8 @@ def _format_transcript(lines: list) -> str:
 def validate_api_key(api_key: str) -> str | None:
     """Cek API key Gemini pengguna dengan request ringan. Return pesan error, atau None jika valid."""
     try:
-        _get_client(api_key).models.get(model=GEMINI_MODEL)
+        client = _get_client(api_key)
+        client.models.get(model=GEMINI_MODEL)
         return None
     except genai_errors.APIError as e:
         if e.code in (400, 401, 403):
@@ -127,7 +128,8 @@ def _call_gemini(system_prompt: str, user_text: str, max_attempts: int = 3, api_
     last_error = None
     for attempt in range(1, max_attempts + 1):
         try:
-            response = _get_client(api_key).models.generate_content(model=GEMINI_MODEL, contents=user_text, config=config)
+            client = _get_client(api_key)
+            response = client.models.generate_content(model=GEMINI_MODEL, contents=user_text, config=config)
         except genai_errors.ClientError as e:
             # Skema terlalu rumit untuk model ini (400 INVALID_ARGUMENT tanpa keterangan) → longgarkan
             # minItems, lalu tanpa skema sama sekali. Error API key tetap diteruskan.
