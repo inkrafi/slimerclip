@@ -163,6 +163,15 @@ Channel memakai klon suara Rafi sendiri, supaya punya suara yang tidak dipakai c
 
 Keputusan: klon suara Rafi dengan .srt. Sebelum render, narasi dibandingkan dengan naskah secara otomatis, dan bagian yang berbeda didengar lalu dibuat ulang kalau perlu.
 
+### Membuat narasi supaya terdengar hidup
+
+Diadaptasi dari teknik video "How I Actually Make AI Voice Sound Real" (Isaac, 2026), sejak 11 November 2026. Script: `motion/tools/equator_takes.py`, lalu `motion/tools/equator_narasi.py`.
+
+- **Pilih versi dari intonasi, bukan hanya akurasi.** Tiap paragraf bisa punya sampai 3 versi. Dari versi yang ucapannya paling akurat, dipilih yang rentang nadanya paling lebar dan temponya tidak menyimpang. Nada datar terdengar seperti robot.
+- **Paragraf kunci selalu dibuat 3 versi:** paragraf pertama tiap bab dan paragraf yang memakai `[jeda]`. Paragraf kunci didengar manual, lalu pilihannya bisa ditimpa di `suara/pilihan-manual.json`.
+- **Tulis `[jeda]` di naskah sebelum reveal penting.** Hasilnya diam 0,8 detik; `[jeda 1.2]` untuk 1,2 detik. Contoh: `Still, you might say this powers the electric car revolution. [jeda] Mostly, it does not.` Pakai hemat, maksimal satu atau dua per bab, supaya tetap terasa.
+- **Jeda mati dipotong otomatis.** Jeda tanpa tanda yang lebih dari 0,7 detik dipendekkan menjadi 0,45 detik.
+
 Menurut YouTube Help, kloning suara sendiri untuk voiceover tidak wajib ditandai sebagai konten AI. Deskripsi channel tetap menyebutnya terus terang.
 
 ### Standar audio
@@ -205,9 +214,12 @@ Thumbnail dan judul bekerja sebagai satu paket: judul memancing pertanyaan, thum
 
 ### Sistem thumbnail
 
-- **Satu objek utama** besar di tengah-kanan (bijih nikel, motor ojol, semangkuk mi), digambar dengan gaya yang sama seperti video.
-- **2–4 kata teks** di kiri, font Bricolage Grotesque, satu kata berwarna saffron. Teks tidak mengulang judul.
-- **Latar navy** dengan siluet peta negara samar, supaya channel langsung dikenali di beranda.
+Standar sejak 11 November 2026: gaya **thumbnail-c video nikel** ("WHOSE NICKEL?"), pilihan pemilik channel. Sumbernya `motion/output/equator/panjang/nikel-indonesia/thumbnail/sumber-c.html`.
+
+- **Peta negara utama berisi benderanya** (merah-putih untuk Indonesia), besar di tengah sampai bawah, putih bersih tanpa detail lain.
+- **Lawan atau pemain kedua lewat bendera di pojok kanan atas** (bintang Tiongkok), dibuat redup supaya tidak berebut dengan teks.
+- **Latar gradient gelap ke warna lawan**: hitam-navy (#050B14) di kiri, merah bendera lawan (#7A1410 ke #E5261C) di kanan. Konflik terbaca dalam satu detik.
+- **2 kata teks besar** di kiri atas, Bricolage Grotesque 800, kata pertama putih, kata kedua saffron (#FFC247), dengan bayangan hitam tebal. Bentuknya pertanyaan, dan tidak mengulang judul.
 - **Hindari pojok kanan bawah** untuk elemen penting, karena tertutup label durasi.
 - **Satu elemen emosi:** panah merah turun, panah saffron naik, atau tanda tanya.
 - Uji keterbacaan di ukuran 160 px lebar (seukuran tampilan di HP).

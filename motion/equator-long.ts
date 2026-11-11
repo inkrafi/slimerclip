@@ -195,10 +195,16 @@ function soundList(): [string, number][] {
 function mixAudio(video: string, start: number, seconds: number, target: string, musicTrim = -10, voiceLevel = -23, checked = false) {
   const inputs = ['-i', video, '-ss', start.toFixed(3), '-t', seconds.toFixed(3), '-i', join(folder, 'narasi-rafi.m4a')];
   let next = 2;
-  /* Suara: buang dengung, kurangi bunyi kotak, tambah kejelasan, redam desis, lalu ratakan volume */
-  const VOICE_CHAIN = 'highpass=f=80,equalizer=f=280:t=q:w=1.1:g=-3,equalizer=f=3000:t=q:w=1.3:g=3,equalizer=f=7500:t=q:w=1:g=1.5,deesser=i=0.4:m=0.5:f=0.5,'
-    + 'acompressor=threshold=-24dB:ratio=3:attack=6:release=110:makeup=4dB,alimiter=limit=0.89:level=false';
-  const graph: string[] = [`[1:a]aresample=48000,${VOICE_CHAIN},aformat=channel_layouts=stereo,asplit=4[voice][key][keyAccent][keyAmbient]`];
+  /* Suara seperti rekaman VO: TTS hanya 24 kHz dan bass-nya tipis, jadi
+     naikkan ke 48 kHz, buang dengung, sedikit hangat di 130 Hz, kurangi bunyi kotak, tambah kejelasan, redam desis,
+     bangun kembali "udara" di atas 12 kHz (exciter + treble), lalu dua kompresor: perata pelan dan penahan puncak cepat */
+  const VOICE_CHAIN = 'aresample=48000:resampler=soxr,highpass=f=75:poles=2,bass=g=1.2:f=130:w=0.7,equalizer=f=320:t=q:w=1.2:g=-3,'
+    + 'equalizer=f=3000:t=q:w=1.0:g=4,deesser=i=0.45:m=0.5:f=0.5,aexciter=amount=2:drive=6:freq=8000:ceil=19000:blend=0,treble=g=2:f=12000:w=0.6,'
+    + 'acompressor=threshold=-21dB:ratio=2.5:attack=15:release=220:makeup=3dB,acompressor=threshold=-12dB:ratio=4:attack=2:release=60,alimiter=limit=0.89:level=false';
+  /* Suara ruangan sangat pelan, supaya jeda tidak hening digital seperti suara komputer */
+  const ROOM = `anoisesrc=c=pink:a=0.00035:d=${seconds.toFixed(3)}:r=48000,highpass=f=150,lowpass=f=6000`;
+  const graph: string[] = [`[1:a]${VOICE_CHAIN}[vo]`, `${ROOM}[room]`,
+    `[vo][room]amix=inputs=2:duration=first:normalize=0,aformat=channel_layouts=stereo,asplit=4[voice][key][keyAccent][keyAmbient]`];
   /* Musik: tiap bab memakai lagu suasananya, disambung dengan fade */
   const beds: string[] = [];
   const offsets: Record<string, number> = {};
